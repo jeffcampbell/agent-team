@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Team Orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Development/agent-team
+ExecStart=/usr/bin/python3 /home/pi/Development/agent-team/orchestrator.py
+Restart=on-failure
+RestartSec=30
+Environment=PATH=/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/pi/Development/agent-team/.env
+
+[Install]
+WantedBy=multi-user.target
