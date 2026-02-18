@@ -1,4 +1,4 @@
-"""Optional web dashboard for the agent-team orchestrator.
+"""Optional web dashboard for the Yamanote orchestrator.
 
 Serves a dark-themed status page and a JSON API endpoint.
 Started as a daemon thread — does not block orchestrator shutdown.
@@ -22,8 +22,8 @@ except FileNotFoundError:
     _HTML_BYTES = b"<h1>dashboard.html not found</h1>"
 
 
-def _build_status_payload(supervisor) -> dict:
-    """Snapshot mutable Supervisor state into a JSON-safe dict.
+def _build_status_payload(station_manager) -> dict:
+    """Snapshot mutable StationManager state into a JSON-safe dict.
 
     Thread safety: we copy all mutable containers at the top so the rest
     of the function operates on local, immutable snapshots.
@@ -31,23 +31,23 @@ def _build_status_payload(supervisor) -> dict:
     now = time.time()
 
     # ── Snapshot mutable containers (GIL-safe dict()/list() copies) ──
-    active_agents = dict(supervisor.active_agents)
-    launch_times = list(supervisor.launch_times)
-    agent_cooldowns = dict(supervisor.agent_cooldowns)
-    consecutive_failures = dict(supervisor.consecutive_failures)
-    last_launch_times = dict(supervisor.last_launch_times)
-    rework_counts = dict(supervisor.rework_counts)
+    active_agents = dict(station_manager.active_agents)
+    launch_times = list(station_manager.launch_times)
+    agent_cooldowns = dict(station_manager.agent_cooldowns)
+    consecutive_failures = dict(station_manager.consecutive_failures)
+    last_launch_times = dict(station_manager.last_launch_times)
+    rework_counts = dict(station_manager.rework_counts)
 
     # ── Scalars (GIL-safe direct reads) ──
-    start_time = getattr(supervisor, "start_time", now)
-    current_spec = supervisor.current_eng_spec
-    current_branch = supervisor.current_eng_branch
-    working_dir = supervisor.current_working_dir
-    sleep_until = supervisor.sleep_until
+    start_time = getattr(station_manager, "start_time", now)
+    current_spec = station_manager.current_conductor_spec
+    current_branch = station_manager.current_conductor_branch
+    working_dir = station_manager.current_working_dir
+    sleep_until = station_manager.sleep_until
 
     # ── Agents ──
     agents_out = {}
-    for name in ("pm", "eng", "reviewer", "sre", "supervisor", "meta"):
+    for name in ("dispatcher", "conductor", "inspector", "signal", "station_manager", "ops"):
         agent = active_agents.get(name)
         cooldown_until = agent_cooldowns.get(name, 0)
         in_cooldown = now < cooldown_until
@@ -88,16 +88,16 @@ def _build_status_payload(supervisor) -> dict:
         }
 
     # ── Pipeline ──
-    if active_agents.get("eng") is not None:
-        stage = "engineering"
-    elif active_agents.get("reviewer") is not None:
-        stage = "reviewing"
+    if active_agents.get("conductor") is not None:
+        stage = "transit"
+    elif active_agents.get("inspector") is not None:
+        stage = "checkpoint"
     elif current_branch and any(
         rework_counts.get(k, 0) > 0 for k in rework_counts
     ):
-        stage = "rework"
+        stage = "reroute"
     elif current_branch:
-        stage = "reviewing"
+        stage = "checkpoint"
     else:
         stage = "idle"
 
@@ -168,15 +168,16 @@ def _build_status_payload(supervisor) -> dict:
     except (OSError, FileNotFoundError):
         pass
 
-    # ── Recently completed (derived from MERGED entries in activity log) ──
+    # ── Recently completed (derived from TERMINUS/MERGED entries in activity log) ──
     completed_out = []
     for raw_line in reversed(all_lines):
         if len(completed_out) >= 20:
             break
         line = raw_line.strip()
-        if "MERGED" not in line or "branch feature/" not in line:
+        # Support both new "TERMINUS" and old "MERGED" keywords
+        if ("TERMINUS" not in line and "MERGED" not in line) or "branch feature/" not in line:
             continue
-        # Format: [YYYY-MM-DD HH:MM:SS]  MERGED — branch feature/title merged to trunk.
+        # Format: [YYYY-MM-DD HH:MM:SS]  TERMINUS — branch feature/title merged to trunk.
         try:
             ts = line[1:20]  # "YYYY-MM-DD HH:MM:SS"
             branch_start = line.index("branch feature/") + len("branch ")
@@ -212,13 +213,13 @@ def _build_status_payload(supervisor) -> dict:
     }
 
 
-def _make_handler(supervisor):
-    """Factory returning a request handler class bound to the given Supervisor."""
+def _make_handler(station_manager):
+    """Factory returning a request handler class bound to the given StationManager."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
-                payload = json.dumps(_build_status_payload(supervisor)).encode()
+                payload = json.dumps(_build_status_payload(station_manager)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -241,7 +242,7 @@ def _make_handler(supervisor):
     return Handler
 
 
-def start_dashboard(supervisor, port: int):
+def start_dashboard(station_manager, port: int):
     """Start the dashboard HTTP server on a daemon thread.
 
     Logs an error and returns (without crashing) if the port is in use.
@@ -250,7 +251,7 @@ def start_dashboard(supervisor, port: int):
     log = logging.getLogger("orchestrator")
 
     try:
-        handler = _make_handler(supervisor)
+        handler = _make_handler(station_manager)
         server = HTTPServer(("0.0.0.0", port), handler)
     except OSError as exc:
         log.error("Dashboard failed to start on port %d: %s", port, exc)

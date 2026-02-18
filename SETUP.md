@@ -1,6 +1,6 @@
 # AI-Assisted Setup
 
-This file is written for an AI coding agent (Claude Code, Cursor, etc.) to follow. It will configure agent-team to manage your project.
+This file is written for an AI coding agent (Claude Code, Cursor, etc.) to follow. It will configure Yamanote to manage your project.
 
 **Human:** just tell your LLM to "follow SETUP.md" and it should do the rest.
 
@@ -75,7 +75,7 @@ If either check fails, go back to Step 3 and fix the values.
 
 ## Step 5: Set up systemd service (optional)
 
-Ask the user if they want to run agent-team as a systemd service. If yes:
+Ask the user if they want to run Yamanote as a systemd service. If yes:
 
 1. Read `agent-team.service` and update the paths to match this machine:
    - `User=` should be the current user (`whoami`)
@@ -117,4 +117,4 @@ source .env && python3 orchestrator.py
 # Watch for the ORCHESTRATOR STARTING banner, then Ctrl+C to stop
 ```
 
-Tell the user: "agent-team is set up and managing `<project-name>`. It will start generating specs and implementing features autonomously. Monitor progress with `tail -f agents/activity.log`."
+Tell the user: "Yamanote is set up and managing `<project-name>`. It will start generating specs and implementing features autonomously. Monitor progress with `tail -f agents/activity.log`."

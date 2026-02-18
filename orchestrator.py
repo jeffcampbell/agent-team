@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-agent orchestrator for Claude Code agent personas."""
+"""Yamanote — multi-agent orchestrator for Claude Code agent personas."""
 
 import glob
 import json
@@ -114,8 +114,8 @@ class AgentProcess:
         return log_path
 
 
-class Supervisor:
-    """Main orchestration loop managing 5 agent personas."""
+class StationManager:
+    """Main orchestration loop managing 6 agent personas."""
 
     def __init__(self):
         # Ensure folder structure exists
@@ -123,21 +123,21 @@ class Supervisor:
             os.makedirs(d, exist_ok=True)
 
         self.active_agents: dict[str, AgentProcess | None] = {
-            "pm": None,
-            "eng": None,
-            "reviewer": None,
-            "sre": None,
-            "supervisor": None,
-            "meta": None,
+            "dispatcher": None,
+            "conductor": None,
+            "inspector": None,
+            "signal": None,
+            "station_manager": None,
+            "ops": None,
         }
-        self.eng_file_edits: dict[str, int] = {}
+        self.conductor_file_edits: dict[str, int] = {}
         self.last_merge_commit: str | None = None
-        self.current_eng_spec: str | None = None
-        self.current_eng_branch: str | None = None
+        self.current_conductor_spec: str | None = None
+        self.current_conductor_branch: str | None = None
         self.current_working_dir: str | None = None
         self.rework_counts: dict[str, int] = {}
         self.spec_timeout_counts: dict[str, int] = {}  # spec path → timeout streak
-        self._pm_skip_logged_branch: str | None = None
+        self._dispatcher_skip_logged_branch: str | None = None
 
         # Cost guardrail: track agent launches in a rolling window
         self.launch_times: deque[float] = deque()
@@ -147,21 +147,21 @@ class Supervisor:
         self.agent_cooldowns: dict[str, float] = {}  # agent name → earliest retry time
         self.consecutive_failures: dict[str, int] = {}  # agent name → failure streak
         self.last_launch_times: dict[str, float] = {}  # agent name → last launch timestamp
-        self._eng_edits_tallied: bool = False  # True once edits counted for current Eng run
+        self._conductor_edits_tallied: bool = False  # True once edits counted for current Conductor run
 
-        # SRE high-water mark: only analyze new log lines since last run
+        # Signal high-water mark: only analyze new log lines since last run
         self.sre_log_offsets: dict[str, int] = {}  # project_dir → byte offset in app.log
-        self._sre_prev_offsets: dict[str, int] = {}  # offset before last SRE read (for rollback on failure)
+        self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
 
-        # Meta agent: track HEAD before meta launch to detect new commits
-        self._meta_head_before: str | None = None
+        # Ops agent: track HEAD before ops launch to detect new commits
+        self._ops_head_before: str | None = None
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
 
-        # Don't run PM or meta immediately on startup — wait for activity to accumulate
-        self.last_launch_times["pm"] = time.time()
-        self.last_launch_times["meta"] = time.time()
+        # Don't run Dispatcher or Ops immediately on startup — wait for activity to accumulate
+        self.last_launch_times["dispatcher"] = time.time()
+        self.last_launch_times["ops"] = time.time()
 
         # Recover orphaned .in_progress specs from previous runs
         self._recover_orphaned_specs()
@@ -190,15 +190,15 @@ class Supervisor:
                 return (1, path)
         return sorted(specs, key=sort_key)
 
-    def _sre_open_bugs(self) -> list[dict]:
-        """Return spec dicts for open SRE-authored bugs (both .json and .json.in_progress)."""
+    def _signal_open_bugs(self) -> list[dict]:
+        """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
         bugs = []
         for pattern in ("*.json", "*.json.in_progress"):
             for path in glob.glob(os.path.join(config.BACKLOG_DIR, pattern)):
                 try:
                     with open(path) as f:
                         data = json.load(f)
-                    if data.get("created_by") == "sre":
+                    if data.get("created_by") in ("sre", "signal"):
                         bugs.append(data)
                 except (json.JSONDecodeError, OSError):
                     continue
@@ -212,7 +212,7 @@ class Supervisor:
             agent.save_log()
             rc = agent.proc.returncode if agent.proc else "?"
             summary = agent.get_output()[:200].replace("\n", " ").strip()
-            activity(f"DONE  [{agent.name}] rc={rc} — {summary or '(no output)'}")
+            activity(f"ARRIVED  [{agent.name}] rc={rc} — {summary or '(no output)'}")
             self.active_agents[name] = None
             # Set cooldown on non-zero exit with exponential backoff
             if rc != 0:
@@ -223,9 +223,9 @@ class Supervisor:
                 )
                 cooldown_until = time.time() + backoff
                 self.agent_cooldowns[name] = cooldown_until
-                activity(f"COOLDOWN [{name}] — failure #{self.consecutive_failures[name]}, retry after {backoff}s")
-                # SRE failed — roll back log offsets so the same lines are retried next run
-                if name == "sre":
+                activity(f"DELAY [{name}] — failure #{self.consecutive_failures[name]}, retry after {backoff}s")
+                # Signal failed — roll back log offsets so the same lines are retried next run
+                if name == "signal":
                     self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
@@ -238,7 +238,7 @@ class Supervisor:
 
     def _kill_timed_out_agent(self, name: str, agent: AgentProcess):
         elapsed = time.time() - (agent.start_time or 0)
-        activity(f"TIMEOUT [{name}] after {elapsed:.0f}s — terminating")
+        activity(f"OVERDUE [{name}] after {elapsed:.0f}s — terminating")
         if agent.proc and agent.proc.poll() is None:
             agent.proc.terminate()
             try:
@@ -246,7 +246,7 @@ class Supervisor:
             except subprocess.TimeoutExpired:
                 agent.proc.kill()
                 agent.proc.wait()
-        agent.save_log(marker="[TIMEOUT]")
+        agent.save_log(marker="[OVERDUE]")
         self.active_agents[name] = None
 
         # Treat timeouts as failures for cooldown purposes
@@ -256,36 +256,36 @@ class Supervisor:
             config.MAX_ERROR_BACKOFF,
         )
         self.agent_cooldowns[name] = time.time() + backoff
-        activity(f"COOLDOWN [{name}] — timeout #{self.consecutive_failures[name]}, retry after {backoff}s")
+        activity(f"DELAY [{name}] — overdue #{self.consecutive_failures[name]}, retry after {backoff}s")
 
-        # SRE timed out — roll back log offsets so those lines are retried next run
-        if name == "sre":
+        # Signal timed out — roll back log offsets so those lines are retried next run
+        if name == "signal":
             self.sre_log_offsets.update(self._sre_prev_offsets)
         self._sre_prev_offsets.clear()
 
-        if name == "eng" and self.current_eng_spec:
-            spec_path = self.current_eng_spec
+        if name == "conductor" and self.current_conductor_spec:
+            spec_path = self.current_conductor_spec
             self.spec_timeout_counts[spec_path] = self.spec_timeout_counts.get(spec_path, 0) + 1
             timeouts = self.spec_timeout_counts[spec_path]
 
             if timeouts >= config.MAX_SPEC_TIMEOUTS:
                 activity(
-                    f"DROPPED spec after {timeouts} timeouts: {os.path.basename(spec_path)}"
+                    f"TERMINATED spec after {timeouts} overdue: {os.path.basename(spec_path)}"
                 )
-                # Reset eng failure counter so the next spec doesn't inherit this
+                # Reset conductor failure counter so the next spec doesn't inherit this
                 # spec's timeout backoff — each spec deserves a fresh start.
-                self.consecutive_failures.pop("eng", None)
-                self.agent_cooldowns.pop("eng", None)
+                self.consecutive_failures.pop("conductor", None)
+                self.agent_cooldowns.pop("conductor", None)
                 in_progress = spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
                 # Clean up the branch if it exists
                 cwd = self.current_working_dir
-                branch = self.current_eng_branch
+                branch = self.current_conductor_branch
                 if cwd and branch and self._git_has_branch(branch, cwd=cwd):
                     self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
                     self._git("branch", "-D", branch, cwd=cwd)
-                # Delete any stale reviewer feedback for this branch
+                # Delete any stale inspector feedback for this branch
                 if branch:
                     feedback_path = os.path.join(
                         config.REVIEW_DIR,
@@ -298,12 +298,12 @@ class Supervisor:
                 in_progress = spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.rename(in_progress, spec_path)
-                    activity(f"RE-QUEUED spec after Eng timeout ({timeouts}/{config.MAX_SPEC_TIMEOUTS}): {os.path.basename(spec_path)}")
+                    activity(f"RE-ROUTED spec after Conductor overdue ({timeouts}/{config.MAX_SPEC_TIMEOUTS}): {os.path.basename(spec_path)}")
 
-            self.current_eng_branch = None
-            self.current_eng_spec = None
+            self.current_conductor_branch = None
+            self.current_conductor_spec = None
             self.current_working_dir = None
-            self.eng_file_edits.clear()
+            self.conductor_file_edits.clear()
 
     def _launch_agent(self, name: str, prompt: str, cwd: str | None = None) -> AgentProcess | None:
         # Error cooldown check
@@ -335,9 +335,9 @@ class Supervisor:
         if len(self.launch_times) > config.MAX_AGENT_LAUNCHES_PER_HOUR:
             self.sleep_until = now + config.SLEEP_MODE_DURATION
             activity(
-                f"COST GUARDRAIL — {len(self.launch_times)} launches in the last hour "
+                f"FARE LIMIT — {len(self.launch_times)} launches in the last hour "
                 f"(limit {config.MAX_AGENT_LAUNCHES_PER_HOUR}). "
-                f"Entering SLEEP MODE until {time.ctime(self.sleep_until)}"
+                f"Entering SERVICE SUSPENDED until {time.ctime(self.sleep_until)}"
             )
             self.launch_times.clear()
             return None  # type: ignore[return-value]
@@ -347,7 +347,7 @@ class Supervisor:
         agent.start()
         self.active_agents[name] = agent
         self.last_launch_times[name] = now
-        activity(f"START [{name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
+        activity(f"DEPARTED [{name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
 
     def _git(self, *args: str, cwd: str | None = None) -> str:
@@ -380,7 +380,7 @@ class Supervisor:
         return result.stdout
 
     def _read_new_log_lines(self, project_dir: str) -> str:
-        """Read only log lines written since the last SRE run (high-water mark)."""
+        """Read only log lines written since the last Signal run (high-water mark)."""
         log_path = os.path.join(project_dir, "app.log")
         if not os.path.exists(log_path):
             return ""
@@ -415,8 +415,8 @@ class Supervisor:
         self.sre_log_offsets[project_dir] = file_size
         return new_content
 
-    def _gather_meta_context(self) -> tuple[str, str]:
-        """Collect diagnostic data for the meta agent."""
+    def _gather_ops_context(self) -> tuple[str, str]:
+        """Collect diagnostic data for the ops agent."""
         activity_tail = ""
         if os.path.exists(config.ACTIVITY_LOG):
             result = subprocess.run(
@@ -429,7 +429,7 @@ class Supervisor:
 
     def _request_self_restart(self):
         """Gracefully terminate all agents and exit for systemd to restart."""
-        activity("META RESTART — new commits detected, restarting orchestrator...")
+        activity("OPS RESTART — new commits detected, restarting orchestrator...")
         for name, agent in self.active_agents.items():
             if agent and agent.proc and agent.proc.poll() is None:
                 activity(f"Terminating {name} (PID {agent.proc.pid})")
@@ -443,7 +443,7 @@ class Supervisor:
         sys.exit(0)
 
     def _is_self_project(self, working_dir: str | None) -> bool:
-        """Return True if the spec targets the agent-team orchestrator itself."""
+        """Return True if the spec targets the Yamanote orchestrator itself."""
         if not working_dir:
             return False
         return os.path.realpath(working_dir) == os.path.realpath(config.SELF_PROJECT_DIR)
@@ -465,25 +465,25 @@ class Supervisor:
                 count += 1
         return count
 
-    def _fire_eng_entropy(self, branch: str, cwd: str | None = None):
-        """Fire the Eng agent — nuke the branch and re-queue the spec."""
+    def _fire_conductor_entropy(self, branch: str, cwd: str | None = None):
+        """Fire the Conductor agent — nuke the branch and re-queue the spec."""
         activity(
-            f"ENTROPY FIRED ENG — branch {branch} has too many fix/update commits. "
+            f"DERAILED [conductor] — branch {branch} has too many fix/update commits. "
             f"Clearing branch and re-queuing spec."
         )
-        # Kill eng if still running
-        eng = self.active_agents.get("eng")
-        if eng and eng.proc and eng.proc.poll() is None:
-            eng.proc.terminate()
+        # Kill conductor if still running
+        conductor = self.active_agents.get("conductor")
+        if conductor and conductor.proc and conductor.proc.poll() is None:
+            conductor.proc.terminate()
             try:
-                eng.proc.wait(timeout=5)
+                conductor.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                eng.proc.kill()
-                eng.proc.wait()
-            eng.save_log(marker="[FIRED — ENTROPY]")
-        self.active_agents["eng"] = None
+                conductor.proc.kill()
+                conductor.proc.wait()
+            conductor.save_log(marker="[DERAILED — ENTROPY]")
+        self.active_agents["conductor"] = None
 
-        # Delete any stale reviewer feedback for this branch
+        # Delete any stale inspector feedback for this branch
         feedback_path = os.path.join(
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
@@ -496,25 +496,25 @@ class Supervisor:
         self._git("branch", "-D", branch, cwd=cwd)
 
         # Re-queue spec
-        if self.current_eng_spec:
-            in_progress = self.current_eng_spec + ".in_progress"
+        if self.current_conductor_spec:
+            in_progress = self.current_conductor_spec + ".in_progress"
             if os.path.exists(in_progress):
-                os.rename(in_progress, self.current_eng_spec)
-                activity(f"RE-QUEUED spec: {os.path.basename(self.current_eng_spec)}")
+                os.rename(in_progress, self.current_conductor_spec)
+                activity(f"RE-ROUTED spec: {os.path.basename(self.current_conductor_spec)}")
 
-        self.eng_file_edits.clear()
-        self.current_eng_branch = None
-        self.current_eng_spec = None
+        self.conductor_file_edits.clear()
+        self.current_conductor_branch = None
+        self.current_conductor_spec = None
         self.current_working_dir = None
 
     # ─── Phases ──────────────────────────────────────────────────────────
 
-    def _phase_pm(self):
-        """If backlog is empty and no PM running, launch PM agent."""
-        if self._is_agent_active("pm"):
+    def _phase_dispatcher(self):
+        """If backlog is empty and no Dispatcher running, launch Dispatcher agent."""
+        if self._is_agent_active("dispatcher"):
             return
-        # Don't log intent if PM is in cooldown — _launch_agent would silently skip
-        if "pm" in self.agent_cooldowns and time.time() < self.agent_cooldowns["pm"]:
+        # Don't log intent if Dispatcher is in cooldown — _launch_agent would silently skip
+        if "dispatcher" in self.agent_cooldowns and time.time() < self.agent_cooldowns["dispatcher"]:
             return
         if self._backlog_specs():
             return
@@ -524,50 +524,50 @@ class Supervisor:
         if not os.path.isdir(default_dir):
             default_dir = config.DEVELOPMENT_DIR
 
-        # Don't generate new specs while eng→review→merge pipeline is active
-        if self.current_eng_branch:
-            if self._pm_skip_logged_branch != self.current_eng_branch:
-                activity(f"PM — skipped, eng pipeline active on {self.current_eng_branch}")
-                self._pm_skip_logged_branch = self.current_eng_branch
+        # Don't generate new specs while conductor→inspector→merge pipeline is active
+        if self.current_conductor_branch:
+            if self._dispatcher_skip_logged_branch != self.current_conductor_branch:
+                activity(f"Dispatcher — skipped, conductor pipeline active on {self.current_conductor_branch}")
+                self._dispatcher_skip_logged_branch = self.current_conductor_branch
             return
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
-        prompt = config.PM_PROMPT.format(
+        prompt = config.DISPATCHER_PROMPT.format(
             timestamp=ts,
             working_dir=default_dir,
             backlog_dir=config.BACKLOG_DIR,
             app_logs=app_logs,
         )
-        agent = self._launch_agent("pm", prompt, cwd=default_dir)
+        agent = self._launch_agent("dispatcher", prompt, cwd=default_dir)
         if agent is not None:
-            activity(f"PM — backlog empty, generating spec for {default_dir}")
+            activity(f"Dispatcher — backlog empty, generating spec for {default_dir}")
 
-    def _phase_eng(self):
-        """If backlog has specs and no Eng running, pick oldest spec and launch Eng."""
-        if self._is_agent_active("eng"):
+    def _phase_conductor(self):
+        """If backlog has specs and no Conductor running, pick oldest spec and launch Conductor."""
+        if self._is_agent_active("conductor"):
             return
-        # Don't log intent if Eng is in cooldown — _launch_agent would silently skip
-        if "eng" in self.agent_cooldowns and time.time() < self.agent_cooldowns["eng"]:
+        # Don't log intent if Conductor is in cooldown — _launch_agent would silently skip
+        if "conductor" in self.agent_cooldowns and time.time() < self.agent_cooldowns["conductor"]:
             return
 
-        # Track file edits once after Eng finishes (not every tick)
-        if not self._eng_edits_tallied and self.active_agents.get("eng") is None and self.current_eng_branch:
+        # Track file edits once after Conductor finishes (not every tick)
+        if not self._conductor_edits_tallied and self.active_agents.get("conductor") is None and self.current_conductor_branch:
             cwd = self.current_working_dir
-            if self._git_has_branch(self.current_eng_branch, cwd=cwd):
+            if self._git_has_branch(self.current_conductor_branch, cwd=cwd):
                 diff_stat = self._git(
                     "diff", "--name-only",
-                    f"{config.TRUNK_BRANCH}..{self.current_eng_branch}",
+                    f"{config.TRUNK_BRANCH}..{self.current_conductor_branch}",
                     cwd=cwd,
                 )
                 for fname in diff_stat.splitlines():
                     fname = fname.strip()
                     if fname:
-                        self.eng_file_edits[fname] = self.eng_file_edits.get(fname, 0) + 1
-            self._eng_edits_tallied = True
+                        self.conductor_file_edits[fname] = self.conductor_file_edits.get(fname, 0) + 1
+            self._conductor_edits_tallied = True
 
         # Don't pick up a new spec while a branch is still in the review pipeline
-        if self.current_eng_branch:
+        if self.current_conductor_branch:
             return
 
         specs = self._backlog_specs()
@@ -589,60 +589,60 @@ class Supervisor:
 
         # "Don't reinvent ourselves" guardrail
         if self._is_self_project(working_dir):
-            activity(f"BLOCKED spec {os.path.basename(spec_path)} — targets agent-team itself. Removing.")
+            activity(f"RESTRICTED spec {os.path.basename(spec_path)} — targets Yamanote itself. Removing.")
             os.remove(spec_path)
             return
 
         # Validate working_dir exists and is under /home/pi/Development
         if not os.path.isdir(working_dir):
-            activity(f"BLOCKED spec {os.path.basename(spec_path)} — working_dir {working_dir} does not exist. Removing.")
+            activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir {working_dir} does not exist. Removing.")
             os.remove(spec_path)
             return
         if not os.path.realpath(working_dir).startswith(os.path.realpath(config.DEVELOPMENT_DIR)):
-            activity(f"BLOCKED spec {os.path.basename(spec_path)} — working_dir outside {config.DEVELOPMENT_DIR}. Removing.")
+            activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir outside {config.DEVELOPMENT_DIR}. Removing.")
             os.remove(spec_path)
             return
 
         spec_title = spec_data.get("title", "untitled")
         branch_name = f"feature/{spec_title}"
-        self.eng_file_edits.clear()  # Reset edit counts for the new spec
-        self.current_eng_spec = spec_path
-        self.current_eng_branch = branch_name
+        self.conductor_file_edits.clear()  # Reset edit counts for the new spec
+        self.current_conductor_spec = spec_path
+        self.current_conductor_branch = branch_name
         self.current_working_dir = working_dir
 
         # If the feature branch already exists with changes (e.g. orphaned spec from
-        # a prior run that actually completed), skip ENG and go straight to review.
+        # a prior run that actually completed), skip Conductor and go straight to inspector.
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
-            activity(f"ENG — branch {branch_name} already has changes, routing to reviewer (orphan recovery)")
+            activity(f"Conductor — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
             os.rename(spec_path, spec_path + ".in_progress")
             return
 
         spec_desc = spec_data.get("description", "")
-        activity(f"ENG — starting spec '{spec_title}' in {working_dir}")
+        activity(f"Conductor — starting spec '{spec_title}' in {working_dir}")
         activity(f"  SPEC: {spec_desc}")
-        prompt = config.ENG_PROMPT.format(
+        prompt = config.CONDUCTOR_PROMPT.format(
             spec_json=json.dumps(spec_data, indent=2),
             spec_title=spec_title,
             working_dir=working_dir,
         )
-        agent = self._launch_agent("eng", prompt, cwd=working_dir)
+        agent = self._launch_agent("conductor", prompt, cwd=working_dir)
         if agent is None:
             # Launch was blocked (cooldown or cost guardrail) — don't move the spec
-            self.current_eng_spec = None
-            self.current_eng_branch = None
+            self.current_conductor_spec = None
+            self.current_conductor_branch = None
             self.current_working_dir = None
             return
-        self._eng_edits_tallied = False
+        self._conductor_edits_tallied = False
         os.rename(spec_path, spec_path + ".in_progress")
 
-    def _phase_reviewer(self):
-        """If Eng finished and branch exists with changes, launch Reviewer."""
-        if self._is_agent_active("reviewer"):
+    def _phase_inspector(self):
+        """If Conductor finished and branch exists with changes, launch Inspector."""
+        if self._is_agent_active("inspector"):
             return
-        if self._is_agent_active("eng"):
+        if self._is_agent_active("conductor"):
             return
 
-        branch = self.current_eng_branch
+        branch = self.current_conductor_branch
         cwd = self.current_working_dir
         if not branch or not cwd:
             return
@@ -651,15 +651,15 @@ class Supervisor:
 
         diff = self._git_diff_trunk(branch, cwd=cwd)
         if not diff:
-            activity(f"REVIEWER — no diff on branch {branch}, cleaning up empty branch")
+            activity(f"Inspector — no diff on branch {branch}, cleaning up empty branch")
             self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
             self._git("branch", "-D", branch, cwd=cwd)
-            if self.current_eng_spec:
-                in_progress = self.current_eng_spec + ".in_progress"
+            if self.current_conductor_spec:
+                in_progress = self.current_conductor_spec + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
-            self.current_eng_branch = None
-            self.current_eng_spec = None
+            self.current_conductor_branch = None
+            self.current_conductor_spec = None
             self.current_working_dir = None
             return
 
@@ -667,23 +667,23 @@ class Supervisor:
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
         )
-        activity(f"REVIEWER — reviewing branch {branch} in {cwd}")
-        prompt = config.REVIEWER_PROMPT.format(
+        activity(f"Inspector — reviewing branch {branch} in {cwd}")
+        prompt = config.INSPECTOR_PROMPT.format(
             branch_name=branch,
             diff=diff[:8000],
             working_dir=cwd,
             review_dir=config.REVIEW_DIR,
             feedback_path=feedback_path,
         )
-        self._launch_agent("reviewer", prompt, cwd=cwd)
+        self._launch_agent("inspector", prompt, cwd=cwd)
 
     def _phase_rework(self):
-        """If reviewer requested changes and both Eng and Reviewer are idle, re-launch Eng."""
-        if self._is_agent_active("eng") or self._is_agent_active("reviewer"):
+        """If inspector requested changes and both Conductor and Inspector are idle, re-launch Conductor."""
+        if self._is_agent_active("conductor") or self._is_agent_active("inspector"):
             return
 
-        branch = self.current_eng_branch
-        spec_path = self.current_eng_spec
+        branch = self.current_conductor_branch
+        spec_path = self.current_conductor_spec
         cwd = self.current_working_dir
         if not branch or not spec_path:
             return
@@ -707,7 +707,7 @@ class Supervisor:
         rework_key = spec_path
         self.rework_counts[rework_key] = self.rework_counts.get(rework_key, 0) + 1
         if self.rework_counts[rework_key] > config.MAX_REWORK_ATTEMPTS:
-            activity(f"ABANDONED spec after {config.MAX_REWORK_ATTEMPTS} rework attempts — branch {branch}")
+            activity(f"CANCELLED spec after {config.MAX_REWORK_ATTEMPTS} rework attempts — branch {branch}")
             self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
             self._git("branch", "-D", branch, cwd=cwd)
             in_progress = spec_path + ".in_progress"
@@ -716,9 +716,9 @@ class Supervisor:
             # Clean up the feedback file so it doesn't accumulate
             if os.path.exists(feedback_path):
                 os.remove(feedback_path)
-            self.eng_file_edits.clear()
-            self.current_eng_branch = None
-            self.current_eng_spec = None
+            self.conductor_file_edits.clear()
+            self.current_conductor_branch = None
+            self.current_conductor_spec = None
             self.current_working_dir = None
             del self.rework_counts[rework_key]
             return
@@ -733,23 +733,23 @@ class Supervisor:
             return
 
         activity(
-            f"REWORK [{self.rework_counts[rework_key]}/{config.MAX_REWORK_ATTEMPTS}] "
-            f"— Eng re-addressing feedback on {branch}"
+            f"RETURN [{self.rework_counts[rework_key]}/{config.MAX_REWORK_ATTEMPTS}] "
+            f"— Conductor re-addressing feedback on {branch}"
         )
-        prompt = config.ENG_REWORK_PROMPT.format(
+        prompt = config.CONDUCTOR_REWORK_PROMPT.format(
             spec_json=json.dumps(spec_data, indent=2),
             spec_title=spec_data.get("title", "untitled"),
             branch_name=branch,
             reviewer_feedback=reviewer_feedback,
             working_dir=cwd,
         )
-        self._launch_agent("eng", prompt, cwd=cwd)
-        self._eng_edits_tallied = False
+        self._launch_agent("conductor", prompt, cwd=cwd)
+        self._conductor_edits_tallied = False
         os.remove(feedback_path)
 
-    def _phase_sre(self):
-        """If app.log exists in the current project, launch SRE to analyze."""
-        if self._is_agent_active("sre"):
+    def _phase_signal(self):
+        """If app.log exists in the current project, launch Signal to analyze."""
+        if self._is_agent_active("signal"):
             return
 
         # Check the current working project, or default to configured project
@@ -757,11 +757,11 @@ class Supervisor:
         if not project_dir:
             project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
 
-        # Layer 1: hard cap on open SRE bugs
-        open_bugs = self._sre_open_bugs()
+        # Layer 1: hard cap on open Signal bugs
+        open_bugs = self._signal_open_bugs()
         if len(open_bugs) >= config.MAX_SRE_OPEN_BUGS:
             log.debug(
-                "SRE skipped — %d open SRE bugs (cap %d)",
+                "Signal skipped — %d open Signal bugs (cap %d)",
                 len(open_bugs), config.MAX_SRE_OPEN_BUGS,
             )
             return
@@ -779,19 +779,19 @@ class Supervisor:
             existing_bugs_text = "(none)"
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        log.debug("SRE launching — analyzing app.log in %s (%d open SRE bugs)", project_dir, len(open_bugs))
-        prompt = config.SRE_PROMPT.format(
+        log.debug("Signal launching — analyzing app.log in %s (%d open Signal bugs)", project_dir, len(open_bugs))
+        prompt = config.SIGNAL_PROMPT.format(
             log_lines=log_lines,
             timestamp=ts,
             working_dir=project_dir,
             backlog_dir=config.BACKLOG_DIR,
             existing_bugs=existing_bugs_text,
         )
-        self._launch_agent("sre", prompt, cwd=project_dir)
+        self._launch_agent("signal", prompt, cwd=project_dir)
 
     def _phase_entropy_check(self):
-        """If branch has too many fix/update commits, fire Eng and restart."""
-        branch = self.current_eng_branch
+        """If branch has too many fix/update commits, fire Conductor and restart."""
+        branch = self.current_conductor_branch
         cwd = self.current_working_dir
         if not branch or not cwd:
             return
@@ -800,28 +800,28 @@ class Supervisor:
 
         fix_count = self._count_fix_commits_on_branch(branch, cwd=cwd)
         if fix_count >= config.ENTROPY_FIX_COMMIT_THRESHOLD:
-            self._fire_eng_entropy(branch, cwd=cwd)
+            self._fire_conductor_entropy(branch, cwd=cwd)
 
-    def _phase_supervisor_check(self):
-        """If Eng edited same files >= 3 times without merge, reset branch and re-queue."""
-        if self._is_agent_active("reviewer"):
+    def _phase_station_manager_check(self):
+        """If Conductor edited same files >= 3 times without merge, reset branch and re-queue."""
+        if self._is_agent_active("inspector"):
             return
-        branch = self.current_eng_branch
+        branch = self.current_conductor_branch
         cwd = self.current_working_dir
         if not branch:
             return
 
-        max_edits = max(self.eng_file_edits.values()) if self.eng_file_edits else 0
+        max_edits = max(self.conductor_file_edits.values()) if self.conductor_file_edits else 0
         if max_edits < config.MAX_ENG_EDITS_BEFORE_RESET:
             return
 
-        activity(f"SUPERVISOR RESET — {max_edits} edits without merge on {branch}")
+        activity(f"SIGNAL CHANGE — {max_edits} edits without merge on {branch}")
 
-        if self.current_eng_spec and os.path.exists(self.current_eng_spec + ".in_progress"):
-            os.rename(self.current_eng_spec + ".in_progress", self.current_eng_spec)
-            activity(f"RE-QUEUED spec: {os.path.basename(self.current_eng_spec)}")
+        if self.current_conductor_spec and os.path.exists(self.current_conductor_spec + ".in_progress"):
+            os.rename(self.current_conductor_spec + ".in_progress", self.current_conductor_spec)
+            activity(f"RE-ROUTED spec: {os.path.basename(self.current_conductor_spec)}")
 
-        # Delete any stale reviewer feedback for this branch
+        # Delete any stale inspector feedback for this branch
         feedback_path = os.path.join(
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
@@ -832,22 +832,22 @@ class Supervisor:
         self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
         self._git("branch", "-D", branch, cwd=cwd)
 
-        self.eng_file_edits.clear()
-        self.current_eng_branch = None
-        self.current_eng_spec = None
+        self.conductor_file_edits.clear()
+        self.current_conductor_branch = None
+        self.current_conductor_spec = None
         self.current_working_dir = None
 
     def _phase_service_recovery(self):
-        """If Reviewer merged to trunk, restart the service."""
-        if self._is_agent_active("reviewer"):
+        """If Inspector merged to trunk, restart the service."""
+        if self._is_agent_active("inspector"):
             return
-        if not self.current_eng_branch:
+        if not self.current_conductor_branch:
             return
 
         cwd = self.current_working_dir
         feedback_path = os.path.join(
             config.REVIEW_DIR,
-            f"{self.current_eng_branch.replace('/', '_')}_feedback.md",
+            f"{self.current_conductor_branch.replace('/', '_')}_feedback.md",
         )
         if not os.path.exists(feedback_path):
             return
@@ -865,13 +865,13 @@ class Supervisor:
         if current_head == self.last_merge_commit:
             return
 
-        activity(f"MERGED — branch {self.current_eng_branch} merged to trunk.")
+        activity(f"TERMINUS — branch {self.current_conductor_branch} merged to trunk.")
         self.last_merge_commit = current_head
 
         # Delete the feature branch now that it's merged
-        if self._git_has_branch(self.current_eng_branch, cwd=cwd):
+        if self._git_has_branch(self.current_conductor_branch, cwd=cwd):
             self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-            self._git("branch", "-D", self.current_eng_branch, cwd=cwd)
+            self._git("branch", "-D", self.current_conductor_branch, cwd=cwd)
 
         if not config.SERVICE_RESTART_CMD:
             activity("SERVICE restart skipped (no SERVICE_RESTART_CMD configured)")
@@ -882,74 +882,74 @@ class Supervisor:
             else:
                 activity(f"SERVICE restart failed (rc={rc})")
 
-        if self.current_eng_spec and os.path.exists(self.current_eng_spec + ".in_progress"):
-            os.remove(self.current_eng_spec + ".in_progress")
+        if self.current_conductor_spec and os.path.exists(self.current_conductor_spec + ".in_progress"):
+            os.remove(self.current_conductor_spec + ".in_progress")
 
         # Clean up the feedback file so it doesn't accumulate and can't falsely
         # re-trigger service recovery if the same branch name is reused later.
         if os.path.exists(feedback_path):
             os.remove(feedback_path)
 
-        self.eng_file_edits.clear()
-        self.current_eng_branch = None
-        self.current_eng_spec = None
+        self.conductor_file_edits.clear()
+        self.current_conductor_branch = None
+        self.current_conductor_spec = None
         self.current_working_dir = None
 
-    def _log_meta_summary(self, output: str):
-        """Extract and log the meta agent's activity summary with visual breakers."""
+    def _log_ops_summary(self, output: str):
+        """Extract and log the ops agent's activity summary with visual breakers."""
         if not output or not output.strip():
             return
-        # Use the full output as the summary — meta is instructed to lead with it
+        # Use the full output as the summary — ops is instructed to lead with it
         lines = output.strip().splitlines()
         # Cap at 15 lines to keep the log readable
         summary_lines = lines[:15]
         activity("*" * 60)
-        activity("META SUMMARY — last hour")
+        activity("OPS REPORT — last hour")
         for line in summary_lines:
             activity(f"  {line}")
         activity("*" * 60)
 
-    def _phase_meta(self):
+    def _phase_ops(self):
         """Periodically analyze orchestrator activity and implement small improvements."""
-        meta_agent = self.active_agents.get("meta")
-        if self._is_agent_active("meta"):
+        ops_agent = self.active_agents.get("ops")
+        if self._is_agent_active("ops"):
             return
 
-        # If meta just completed, log summary and check for new commits → restart
-        if self._meta_head_before is not None:
-            if meta_agent is not None:
-                self._log_meta_summary(meta_agent.get_output())
+        # If ops just completed, log summary and check for new commits → restart
+        if self._ops_head_before is not None:
+            if ops_agent is not None:
+                self._log_ops_summary(ops_agent.get_output())
             current_head = self._git_last_commit(cwd=config.BASE_DIR)
-            if current_head != self._meta_head_before:
-                self._meta_head_before = None
+            if current_head != self._ops_head_before:
+                self._ops_head_before = None
                 self._request_self_restart()
-            self._meta_head_before = None
+            self._ops_head_before = None
             return
 
         # Skip if in cooldown
-        if "meta" in self.agent_cooldowns and time.time() < self.agent_cooldowns["meta"]:
+        if "ops" in self.agent_cooldowns and time.time() < self.agent_cooldowns["ops"]:
             return
 
-        activity_tail, git_log = self._gather_meta_context()
-        prompt = config.META_PROMPT.format(
+        activity_tail, git_log = self._gather_ops_context()
+        prompt = config.OPS_PROMPT.format(
             base_dir=config.BASE_DIR,
             activity_tail=activity_tail or "(no activity log)",
             git_log=git_log or "(no commits)",
         )
-        agent = self._launch_agent("meta", prompt, cwd=config.BASE_DIR)
+        agent = self._launch_agent("ops", prompt, cwd=config.BASE_DIR)
         if agent is not None:
-            self._meta_head_before = self._git_last_commit(cwd=config.BASE_DIR)
+            self._ops_head_before = self._git_last_commit(cwd=config.BASE_DIR)
 
     # ─── Main loop ───────────────────────────────────────────────────────
 
     def run(self):
         activity("=" * 60)
-        activity("ORCHESTRATOR STARTING")
+        activity("YAMANOTE LINE OPEN")
         activity(f"  Tick interval: {config.TICK_INTERVAL}s")
         activity(f"  Backlog: {config.BACKLOG_DIR}")
         activity(f"  Activity log: {config.ACTIVITY_LOG}")
         activity(f"  Agent timeout: {config.AGENT_TIMEOUT_SECONDS}s")
-        activity(f"  Cost limit: {config.MAX_AGENT_LAUNCHES_PER_HOUR} launches/hr")
+        activity(f"  Fare limit: {config.MAX_AGENT_LAUNCHES_PER_HOUR} launches/hr")
         activity(f"  Entropy threshold: {config.ENTROPY_FIX_COMMIT_THRESHOLD} fix commits")
         for agent_name, model in config.AGENT_MODELS.items():
             interval = config.AGENT_MIN_INTERVALS.get(agent_name, 0)
@@ -962,19 +962,19 @@ class Supervisor:
                 if time.time() < self.sleep_until:
                     remaining = int(self.sleep_until - time.time())
                     if remaining % 300 < config.TICK_INTERVAL:  # log every ~5 min
-                        activity(f"SLEEPING — {remaining}s remaining (cost guardrail)")
+                        activity(f"SERVICE SUSPENDED — {remaining}s remaining (fare limit)")
                     time.sleep(config.TICK_INTERVAL)
                     continue
 
                 self._phase_service_recovery()
                 self._phase_rework()
-                self._phase_pm()
-                self._phase_eng()
-                self._phase_reviewer()
-                self._phase_sre()
+                self._phase_dispatcher()
+                self._phase_conductor()
+                self._phase_inspector()
+                self._phase_signal()
                 self._phase_entropy_check()
-                self._phase_supervisor_check()
-                self._phase_meta()
+                self._phase_station_manager_check()
+                self._phase_ops()
 
                 # Tick summary
                 active = [n for n, a in self.active_agents.items() if a is not None]
@@ -988,7 +988,7 @@ class Supervisor:
 
                 time.sleep(config.TICK_INTERVAL)
         except KeyboardInterrupt:
-            activity("SHUTTING DOWN — terminating active agents...")
+            activity("LAST TRAIN — terminating active agents...")
             for name, agent in self.active_agents.items():
                 if agent and agent.proc and agent.proc.poll() is None:
                     activity(f"Terminating {name} (PID {agent.proc.pid})")
@@ -1004,7 +1004,7 @@ class Supervisor:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Multi-agent orchestrator")
+    parser = argparse.ArgumentParser(description="Yamanote — multi-agent orchestrator")
     parser.add_argument("--dashboard", action="store_true",
                         help="Enable web dashboard on port 8080")
     parser.add_argument("--dashboard-port", type=int, default=0, metavar="PORT",
@@ -1014,10 +1014,10 @@ if __name__ == "__main__":
     # Priority: --dashboard-port > --dashboard (8080) > env var > disabled
     dash_port = args.dashboard_port or (8080 if args.dashboard else config.DASHBOARD_PORT)
 
-    supervisor = Supervisor()
+    station_manager = StationManager()
 
     if dash_port:
         from dashboard import start_dashboard
-        start_dashboard(supervisor, dash_port)
+        start_dashboard(station_manager, dash_port)
 
-    supervisor.run()
+    station_manager.run()

@@ -3,152 +3,159 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Team Dashboard</title>
+<title>Yamanote Dashboard</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-    background: #1a1a2e;
-    color: #e0e0e0;
+    font-family: Helvetica, 'Segoe UI', Arial, sans-serif;
+    background: #f2f2f2;
+    color: #333;
     min-height: 100vh;
   }
 
-  /* Header */
   .header {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 16px 24px;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    padding: 12px 24px;
+    background: #1a1a1a;
+    color: #9acd32;
   }
-  .header h1 { font-size: 1.3rem; color: #e94560; }
-  .header-right { display: flex; gap: 20px; font-size: 0.85rem; color: #888; }
+  .header h1 {
+    font-size: 1.1rem; font-weight: 700;
+    letter-spacing: 3px; text-transform: uppercase;
+  }
+  .header-right { display: flex; gap: 16px; font-size: 0.8rem; color: #777; }
 
-  /* Connection banner */
   .conn-lost {
     display: none; padding: 8px; text-align: center;
-    background: #e94560; color: #fff; font-weight: bold; font-size: 0.85rem;
+    background: #e81123; color: #fff; font-weight: bold; font-size: 0.85rem;
   }
   .conn-lost.visible { display: block; }
 
-  /* Agent cards grid */
+  /* ── Loop Pipeline (SVG scales via viewBox) ── */
+  .loop-section {
+    padding: 24px 20px 16px;
+    display: flex; justify-content: center;
+  }
+  .loop-svg {
+    width: 100%;
+    max-width: 880px;
+    height: auto;
+  }
+  .loop-svg text {
+    font-family: Helvetica, 'Segoe UI', Arial, sans-serif;
+  }
+  .dot-active {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: dotPulse 2s ease-in-out infinite;
+  }
+  @keyframes dotPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.35); }
+  }
+
+  /* ── Agent Cards ── */
   .agents-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px; padding: 16px 24px;
+    grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+    gap: 10px; padding: 0 24px 12px;
   }
   .agent-card {
-    background: #16213e; border-radius: 8px; padding: 14px;
-    border-left: 4px solid #444;
+    background: #fff; padding: 10px 12px;
+    border: 2px solid #e0e0e0;
+    border-radius: 4px;
   }
-  .agent-card.running  { border-left-color: #4ecca3; }
-  .agent-card.idle     { border-left-color: #555; }
-  .agent-card.cooldown { border-left-color: #f0a500; }
-  .agent-name { font-weight: 600; font-size: 1rem; margin-bottom: 6px; text-transform: uppercase; }
+  .agent-card.running { border-color: #9acd32; }
+  .agent-card.cooldown { border-color: #ffb300; }
+  .agent-name {
+    font-weight: 700; font-size: 0.78rem;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #333;
+  }
   .agent-badge {
-    display: inline-block; font-size: 0.7rem; padding: 2px 8px;
-    border-radius: 10px; font-weight: 600; margin-left: 8px;
+    display: inline-block; font-size: 0.55rem; padding: 1px 5px;
+    font-weight: 700; margin-left: 4px;
+    text-transform: uppercase; border-radius: 2px;
   }
-  .badge-running  { background: #4ecca3; color: #1a1a2e; }
-  .badge-idle     { background: #444; color: #aaa; }
-  .badge-cooldown { background: #f0a500; color: #1a1a2e; }
-  .agent-detail { font-size: 0.78rem; color: #888; margin-top: 3px; }
+  .badge-running { background: #9acd32; color: #fff; }
+  .badge-idle { background: #eee; color: #999; }
+  .badge-cooldown { background: #ffb300; color: #fff; }
+  .agent-detail { font-size: 0.7rem; color: #999; margin-top: 2px; }
 
-  /* Pipeline */
-  .pipeline-section { padding: 8px 24px 16px; }
-  .pipeline-section h2 { font-size: 0.95rem; color: #888; margin-bottom: 10px; }
-  .pipeline {
-    display: flex; align-items: center; gap: 0;
-    background: #16213e; border-radius: 8px; padding: 12px 16px;
-  }
-  .pipeline-stage {
-    padding: 8px 18px; border-radius: 6px; font-size: 0.82rem;
-    background: #0f3460; color: #666; font-weight: 600;
-  }
-  .pipeline-stage.active { background: #4ecca3; color: #1a1a2e; }
-  .pipeline-arrow { color: #444; margin: 0 8px; font-size: 1.1rem; }
-
-  /* Stats bar */
+  /* ── Stats ── */
   .stats-bar {
-    display: flex; gap: 24px; padding: 8px 24px 12px;
-    font-size: 0.82rem; color: #888; flex-wrap: wrap;
+    display: flex; gap: 20px; padding: 4px 24px 12px;
+    font-size: 0.78rem; color: #888; flex-wrap: wrap;
   }
-  .stat-item strong { color: #e0e0e0; }
-  .stat-sleep { color: #f0a500; font-weight: 600; }
+  .stat-item strong { color: #333; }
+  .stat-sleep { color: #e81123; font-weight: 700; }
 
-  /* Bottom two-column layout */
+  /* ── Bottom Grid ── */
   .bottom-grid {
     display: grid;
     grid-template-columns: 1fr 2fr;
-    gap: 16px; padding: 0 24px 24px;
+    gap: 12px; padding: 0 24px 24px;
   }
   @media (max-width: 800px) { .bottom-grid { grid-template-columns: 1fr; } }
 
   .panel {
-    background: #16213e; border-radius: 8px; padding: 14px;
+    background: #fff; padding: 14px;
     max-height: 400px; overflow-y: auto;
+    border: 1px solid #e0e0e0; border-radius: 4px;
   }
-  .panel h3 { font-size: 0.9rem; color: #888; margin-bottom: 10px; }
-
-  /* Left column stacked panels */
-  .left-stack { display: flex; flex-direction: column; gap: 16px; }
-
-  /* Backlog */
-  .backlog-item {
-    padding: 6px 0; border-bottom: 1px solid #0f3460;
-    font-size: 0.8rem;
+  .panel h3 {
+    font-size: 0.65rem; color: #999; margin-bottom: 10px;
+    text-transform: uppercase; letter-spacing: 2px; font-weight: 700;
   }
+  .left-stack { display: flex; flex-direction: column; gap: 12px; }
+
+  .backlog-item { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.78rem; }
   .backlog-item:last-child { border-bottom: none; }
-  .backlog-title { color: #e0e0e0; font-weight: 600; }
-  .backlog-meta { color: #666; font-size: 0.72rem; }
-  .priority-high   { color: #e94560; }
-  .priority-medium { color: #f0a500; }
-  .priority-low    { color: #4ecca3; }
+  .backlog-title { color: #333; font-weight: 600; }
+  .backlog-meta { color: #bbb; font-size: 0.68rem; }
+  .priority-high { color: #e81123; font-weight: 700; }
+  .priority-medium { color: #ffb300; }
+  .priority-low { color: #9acd32; }
 
-  /* Completed */
-  .completed-item {
-    padding: 6px 0; border-bottom: 1px solid #0f3460;
-    font-size: 0.8rem;
-  }
+  .completed-item { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.78rem; }
   .completed-item:last-child { border-bottom: none; }
-  .completed-title { color: #4ecca3; font-weight: 600; }
-  .completed-meta { color: #666; font-size: 0.72rem; }
+  .completed-title { color: #9acd32; font-weight: 700; }
+  .completed-meta { color: #bbb; font-size: 0.68rem; }
 
-  /* Activity feed */
   .activity-feed {
-    font-family: 'Cascadia Code', 'Fira Code', monospace;
-    font-size: 0.72rem; line-height: 1.6;
+    font-family: 'Cascadia Code', 'Fira Code', 'SF Mono', monospace;
+    font-size: 0.7rem; line-height: 1.7;
   }
   .activity-line { white-space: pre-wrap; word-break: break-all; }
-  .activity-line.line-start  { color: #4ecca3; }
-  .activity-line.line-done   { color: #888; }
-  .activity-line.line-error  { color: #e94560; }
-  .activity-line.line-merged { color: #4ecca3; font-weight: 600; }
-  .activity-line.line-meta   { color: #b388ff; }
-  .activity-line.line-default { color: #ccc; }
+  .line-departed { color: #2d8a2d; }
+  .line-arrived  { color: #888; }
+  .line-error    { color: #e81123; }
+  .line-terminus { color: #b87a00; font-weight: 700; }
+  .line-ops      { color: #888; }
+  .line-default  { color: #666; }
 
-  /* Config (collapsible) */
   .config-section { padding: 0 24px 24px; }
-  details { background: #16213e; border-radius: 8px; }
+  details { background: #fff; border: 1px solid #e0e0e0; border-radius: 4px; }
   details summary {
-    padding: 10px 14px; cursor: pointer; font-size: 0.85rem; color: #888;
+    padding: 10px 14px; cursor: pointer;
+    font-size: 0.7rem; color: #999;
+    text-transform: uppercase; letter-spacing: 1px; font-weight: 600;
   }
-  details summary:hover { color: #e0e0e0; }
+  details summary:hover { color: #333; }
   .config-body {
     padding: 0 14px 14px;
-    font-family: monospace; font-size: 0.75rem; color: #888;
-    white-space: pre-wrap;
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 0.7rem; color: #888; white-space: pre-wrap;
   }
 
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: #1a1a2e; }
-  ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #ddd; border-radius: 3px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>Agent Team Dashboard</h1>
+  <h1>Yamanote</h1>
   <div class="header-right">
     <span id="clock"></span>
     <span id="uptime"></span>
@@ -156,13 +163,94 @@
 </div>
 <div class="conn-lost" id="connBanner">Connection lost — retrying...</div>
 
-<div class="agents-grid" id="agentsGrid"></div>
+<div class="loop-section">
+  <svg class="loop-svg" viewBox="-105 -68 1025 420">
+    <!-- Glow filter for active train -->
+    <defs>
+      <filter id="trainGlow" x="-100%" y="-100%" width="300%" height="300%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+        <feColorMatrix in="blur" type="matrix"
+          values="0 0 0 0 0.6  0 0 0 0 0.8  0 0 0 0 0.2  0 0 0 0.6 0" result="green"/>
+        <feMerge><feMergeNode in="green"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
 
-<div class="pipeline-section">
-  <h2>Pipeline</h2>
-  <div class="pipeline" id="pipeline"></div>
+    <!-- Track (stadium/pill shape) -->
+    <rect x="0" y="0" width="800" height="280" rx="140" ry="140"
+          fill="none" stroke="#9acd32" stroke-width="12"/>
+
+    <!-- Invisible centerline path for train positioning -->
+    <path id="trackPath"
+          d="M 400,0 L 660,0 A 140,140 0 0 1 660,280 L 140,280 A 140,140 0 0 1 140,0 Z"
+          fill="none" stroke="none"/>
+
+    <!-- Station dots -->
+    <circle id="dot-0" cx="400" cy="0"   r="14" fill="#fff" stroke="#ccc" stroke-width="3.5"/>
+    <circle id="dot-1" cx="800" cy="140" r="14" fill="#fff" stroke="#ccc" stroke-width="3.5"/>
+    <circle id="dot-2" cx="520" cy="280" r="14" fill="#fff" stroke="#ccc" stroke-width="3.5"/>
+    <circle id="dot-3" cx="280" cy="280" r="14" fill="#fff" stroke="#ccc" stroke-width="3.5"/>
+    <circle id="dot-4" cx="0"   cy="140" r="14" fill="#fff" stroke="#ccc" stroke-width="3.5"/>
+
+    <!-- Station badges -->
+    <!-- JY-01 Spec (above) -->
+    <g id="badge-0">
+      <rect id="brect-0" x="370" y="-58" width="60" height="42" rx="3"
+            fill="#fff" stroke="#333" stroke-width="1.5"/>
+      <text x="400" y="-36" text-anchor="middle" font-size="9"
+            fill="#999" font-weight="600" letter-spacing="0.8">JY-01</text>
+      <text x="400" y="-22" text-anchor="middle" font-size="14"
+            fill="#333" font-weight="700">Spec</text>
+    </g>
+    <!-- JY-02 Engineer (right) -->
+    <g id="badge-1">
+      <rect id="brect-1" x="820" y="119" width="88" height="42" rx="3"
+            fill="#fff" stroke="#333" stroke-width="1.5"/>
+      <text x="864" y="139" text-anchor="middle" font-size="9"
+            fill="#999" font-weight="600" letter-spacing="0.8">JY-02</text>
+      <text x="864" y="155" text-anchor="middle" font-size="14"
+            fill="#333" font-weight="700">Engineer</text>
+    </g>
+    <!-- JY-03 Review (below) -->
+    <g id="badge-2">
+      <rect id="brect-2" x="482" y="296" width="76" height="42" rx="3"
+            fill="#fff" stroke="#333" stroke-width="1.5"/>
+      <text x="520" y="316" text-anchor="middle" font-size="9"
+            fill="#999" font-weight="600" letter-spacing="0.8">JY-03</text>
+      <text x="520" y="332" text-anchor="middle" font-size="14"
+            fill="#333" font-weight="700">Review</text>
+    </g>
+    <!-- JY-04 Rework (below) -->
+    <g id="badge-3">
+      <rect id="brect-3" x="241" y="296" width="78" height="42" rx="3"
+            fill="#fff" stroke="#333" stroke-width="1.5"/>
+      <text x="280" y="316" text-anchor="middle" font-size="9"
+            fill="#999" font-weight="600" letter-spacing="0.8">JY-04</text>
+      <text x="280" y="332" text-anchor="middle" font-size="14"
+            fill="#333" font-weight="700">Rework</text>
+    </g>
+    <!-- JY-05 Merged (left) -->
+    <g id="badge-4">
+      <rect id="brect-4" x="-90" y="119" width="76" height="42" rx="3"
+            fill="#fff" stroke="#333" stroke-width="1.5"/>
+      <text x="-52" y="139" text-anchor="middle" font-size="9"
+            fill="#999" font-weight="600" letter-spacing="0.8">JY-05</text>
+      <text x="-52" y="155" text-anchor="middle" font-size="14"
+            fill="#333" font-weight="700">Merged</text>
+    </g>
+
+    <!-- Train indicator -->
+    <rect id="trainEl" width="22" height="9" rx="2.5"
+          fill="#fff" stroke="#333" stroke-width="1.5" visibility="hidden"/>
+
+    <!-- Center text -->
+    <text id="specText" x="400" y="132" text-anchor="middle"
+          font-size="20" font-weight="700" fill="#333">Awaiting departure</text>
+    <text id="specDetail" x="400" y="158" text-anchor="middle"
+          font-size="14" fill="#999"></text>
+  </svg>
 </div>
 
+<div class="agents-grid" id="agentsGrid"></div>
 <div class="stats-bar" id="statsBar"></div>
 
 <div class="bottom-grid">
@@ -176,7 +264,7 @@
       <div id="completedList"></div>
     </div>
   </div>
-  <div class="panel" id="activityPanel">
+  <div class="panel activity-panel" id="activityPanel">
     <h3>Activity</h3>
     <div class="activity-feed" id="activityFeed"></div>
   </div>
@@ -190,14 +278,28 @@
 </div>
 
 <script>
-const REFRESH_MS = 10000;
+var REFRESH_MS = 10000;
+
+var STATIONS = [
+  { code: 'JY-01', name: 'Spec',        key: 'idle',       trainPos: 0 },
+  { code: 'JY-02', name: 'Engineer',    key: 'transit',    trainPos: 25 },
+  { code: 'JY-03', name: 'Review',      key: 'checkpoint', trainPos: 44 },
+  { code: 'JY-04', name: 'Rework',      key: 'reroute',    trainPos: 56 },
+  { code: 'JY-05', name: 'Merged',      key: 'terminal',   trainPos: 75 }
+];
+
+var STAGE_KEYS = STATIONS.map(function(s) { return s.key; });
+
+var trackPath = null;
+var trackLength = 0;
+var currentTrainPos = -1;
 
 function fmtDuration(secs) {
   if (secs == null) return '-';
-  const s = Math.floor(secs);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
+  var s = Math.floor(secs);
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  var sec = s % 60;
   if (h > 0) return h + 'h ' + m + 'm';
   if (m > 0) return m + 'm ' + sec + 's';
   return sec + 's';
@@ -207,64 +309,130 @@ function updateClock() {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString();
 }
 
+function positionTrain(pct) {
+  var train = document.getElementById('trainEl');
+  if (!trackPath) {
+    trackPath = document.getElementById('trackPath');
+    trackLength = trackPath.getTotalLength();
+  }
+  if (pct < 0) {
+    train.setAttribute('visibility', 'hidden');
+    train.removeAttribute('filter');
+    currentTrainPos = -1;
+    return;
+  }
+  train.setAttribute('visibility', 'visible');
+  train.setAttribute('filter', 'url(#trainGlow)');
+
+  // Animate smoothly by stepping
+  var targetLen = trackLength * pct / 100;
+  var pt = trackPath.getPointAtLength(targetLen);
+  var pt2 = trackPath.getPointAtLength(Math.min(targetLen + 2, trackLength));
+  var angle = Math.atan2(pt2.y - pt.y, pt2.x - pt.x) * 180 / Math.PI;
+  train.setAttribute('transform',
+    'translate(' + pt.x + ',' + pt.y + ') rotate(' + angle + ') translate(-11,-4.5)');
+  currentTrainPos = pct;
+}
+
+function renderPipeline(pipeline) {
+  var activeIdx = STAGE_KEYS.indexOf(pipeline.stage);
+
+  for (var i = 0; i < STATIONS.length; i++) {
+    var dot = document.getElementById('dot-' + i);
+    var brect = document.getElementById('brect-' + i);
+
+    if (activeIdx >= 0 && i === activeIdx) {
+      dot.setAttribute('fill', '#ffb300');
+      dot.setAttribute('stroke', '#9acd32');
+      dot.classList.add('dot-active');
+      brect.setAttribute('stroke', '#9acd32');
+      brect.setAttribute('stroke-width', '2');
+    } else if (activeIdx >= 0 && i < activeIdx) {
+      dot.setAttribute('fill', '#fff');
+      dot.setAttribute('stroke', '#9acd32');
+      dot.classList.remove('dot-active');
+      brect.setAttribute('stroke', '#9acd32');
+      brect.setAttribute('stroke-width', '1.5');
+    } else {
+      dot.setAttribute('fill', '#fff');
+      dot.setAttribute('stroke', '#ccc');
+      dot.classList.remove('dot-active');
+      brect.setAttribute('stroke', '#ccc');
+      brect.setAttribute('stroke-width', '1.5');
+    }
+  }
+
+  // Train position
+  if (activeIdx > 0) {
+    positionTrain(STATIONS[activeIdx].trainPos);
+  } else {
+    positionTrain(-1);
+  }
+
+  // Center text
+  var specText = document.getElementById('specText');
+  var specDetail = document.getElementById('specDetail');
+  if (pipeline.current_spec) {
+    specText.textContent = pipeline.current_spec;
+    specDetail.textContent = 'Rework ' + pipeline.rework_count + '/' + pipeline.max_rework;
+  } else {
+    specText.textContent = 'Awaiting departure';
+    specDetail.textContent = '';
+  }
+}
+
+var AGENT_DESC = {
+  dispatcher:      'Writes specs from codebase analysis',
+  conductor:       'Implements specs on feature branches',
+  inspector:       'Reviews diffs and merges work',
+  signal:          'Monitors app logs for errors',
+  station_manager: 'Resets stuck engineering branches',
+  ops:             'Improves orchestrator operations'
+};
+
+function modelFamily(model) {
+  if (!model) return '';
+  var parts = model.split('-');
+  return parts.length >= 2 ? parts[1] : model;
+}
+
 function renderAgents(agents) {
-  const grid = document.getElementById('agentsGrid');
+  var grid = document.getElementById('agentsGrid');
   grid.innerHTML = '';
-  for (const [name, info] of Object.entries(agents)) {
-    const status = info.status || 'idle';
-    const card = document.createElement('div');
+  for (var name in agents) {
+    var info = agents[name];
+    var status = info.status || 'idle';
+    var card = document.createElement('div');
     card.className = 'agent-card ' + status;
 
-    let details = '';
+    var details = '';
     if (status === 'running') {
-      details = '<div class="agent-detail">PID ' + info.pid + ' &mdash; ' + fmtDuration(info.running_for_seconds) + '</div>';
+      details = '<div class="agent-detail">PID ' + info.pid + ' \u2014 ' + fmtDuration(info.running_for_seconds) + '</div>';
     } else if (status === 'cooldown') {
       details = '<div class="agent-detail">Retry in ' + fmtDuration(info.cooldown_remaining_seconds) + '</div>';
     } else if (info.next_run_seconds != null) {
-      details = '<div class="agent-detail">Next run in ' + fmtDuration(info.next_run_seconds) + '</div>';
+      details = '<div class="agent-detail">Next in ' + fmtDuration(info.next_run_seconds) + '</div>';
     } else {
       details = '<div class="agent-detail">Idle</div>';
     }
 
-    const badgeCls = 'badge-' + status;
+    var desc = AGENT_DESC[name] || '';
+
     card.innerHTML =
-      '<div class="agent-name">' + name +
-      '<span class="agent-badge ' + badgeCls + '">' + status + '</span></div>' +
-      details +
-      '<div class="agent-detail">' + (info.model || '').split('-').slice(-2).join('-') + '</div>';
+      '<div class="agent-name">' + name.replace(/_/g, ' ') +
+      '<span class="agent-badge badge-' + status + '">' + status + '</span></div>' +
+      '<div class="agent-detail">' + desc + '</div>' +
+      details;
     grid.appendChild(card);
   }
 }
 
-function renderPipeline(pipeline) {
-  const el = document.getElementById('pipeline');
-  const stages = [
-    { key: 'idle', label: 'Spec' },
-    { key: 'engineering', label: 'Engineering' },
-    { key: 'reviewing', label: 'Review' },
-    { key: 'rework', label: 'Rework' },
-    { key: 'merged', label: 'Merge' },
-  ];
-  let html = '';
-  for (let i = 0; i < stages.length; i++) {
-    const s = stages[i];
-    const active = (pipeline.stage === s.key) ? ' active' : '';
-    html += '<div class="pipeline-stage' + active + '">' + s.label + '</div>';
-    if (i < stages.length - 1) html += '<span class="pipeline-arrow">&rarr;</span>';
-  }
-  if (pipeline.current_spec) {
-    html += '<span style="margin-left:16px;font-size:0.8rem;color:#aaa">' +
-      pipeline.current_spec + ' (rework ' + pipeline.rework_count + '/' + pipeline.max_rework + ')</span>';
-  }
-  el.innerHTML = html;
-}
-
 function renderStats(stats) {
-  const el = document.getElementById('statsBar');
-  let html = '<span class="stat-item">Launches/hr: <strong>' +
+  var el = document.getElementById('statsBar');
+  var html = '<span class="stat-item">Launches/hr: <strong>' +
     stats.launches_last_hour + '/' + stats.max_launches_per_hour + '</strong></span>';
   if (stats.sleep_mode_active) {
-    html += '<span class="stat-sleep">SLEEP MODE &mdash; ' +
+    html += '<span class="stat-sleep">SERVICE SUSPENDED \u2014 ' +
       fmtDuration(stats.sleep_remaining_seconds) + ' remaining</span>';
   }
   el.innerHTML = html;
@@ -272,25 +440,24 @@ function renderStats(stats) {
 
 function renderBacklog(backlog) {
   document.getElementById('backlogCount').textContent = backlog.count;
-  const list = document.getElementById('backlogList');
+  var list = document.getElementById('backlogList');
   if (!backlog.specs || backlog.specs.length === 0) {
-    list.innerHTML = '<div style="color:#555;font-size:0.8rem">No specs in backlog</div>';
+    list.innerHTML = '<div style="color:#ccc;font-size:0.78rem">No specs in backlog</div>';
     return;
   }
   list.innerHTML = backlog.specs.map(function(s) {
-    const pcls = 'priority-' + (s.priority || 'medium');
     return '<div class="backlog-item">' +
       '<div class="backlog-title">' + (s.title || '(untitled)') + '</div>' +
-      '<div class="backlog-meta"><span class="' + pcls + '">' + (s.priority || 'medium') +
-      '</span> &middot; ' + (s.created_by || '?') + ' &middot; ' + (s.filename || '') + '</div></div>';
+      '<div class="backlog-meta"><span class="priority-' + (s.priority || 'medium') + '">' +
+      (s.priority || 'medium') + '</span> \u00b7 ' + (s.created_by || '?') + '</div></div>';
   }).join('');
 }
 
 function renderCompleted(completed) {
   document.getElementById('completedCount').textContent = completed.length;
-  const list = document.getElementById('completedList');
+  var list = document.getElementById('completedList');
   if (!completed || completed.length === 0) {
-    list.innerHTML = '<div style="color:#555;font-size:0.8rem">No completed work yet</div>';
+    list.innerHTML = '<div style="color:#ccc;font-size:0.78rem">No completed work yet</div>';
     return;
   }
   list.innerHTML = completed.map(function(c) {
@@ -301,39 +468,40 @@ function renderCompleted(completed) {
 }
 
 function classifyLine(line) {
-  const l = line.toLowerCase();
-  if (l.includes('start ') || l.includes('start\t')) return 'line-start';
-  if (l.includes('done ') || l.includes('done\t')) return 'line-done';
-  if (l.includes('error') || l.includes('timeout') || l.includes('cooldown') || l.includes('fired') || l.includes('abandoned')) return 'line-error';
-  if (l.includes('merged')) return 'line-merged';
-  if (l.includes('meta')) return 'line-meta';
+  var l = line.toLowerCase();
+  if (l.includes('departed') || l.includes('start ') || l.includes('start\t')) return 'line-departed';
+  if (l.includes('arrived') || l.includes('done ') || l.includes('done\t')) return 'line-arrived';
+  if (l.includes('error') || l.includes('overdue') || l.includes('timeout') ||
+      l.includes('delay') || l.includes('cooldown') || l.includes('derailed') ||
+      l.includes('fired') || l.includes('cancelled') || l.includes('abandoned')) return 'line-error';
+  if (l.includes('terminus') || l.includes('merged')) return 'line-terminus';
+  if (l.includes('ops report') || l.includes('ops restart') || l.includes('meta')) return 'line-ops';
   return 'line-default';
 }
 
 function renderActivity(lines) {
-  const el = document.getElementById('activityFeed');
+  var el = document.getElementById('activityFeed');
   if (!lines || lines.length === 0) {
     el.innerHTML = '<div style="color:#555">No activity yet</div>';
     return;
   }
   el.innerHTML = lines.slice(-80).map(function(line) {
-    const cls = classifyLine(line);
-    const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var cls = classifyLine(line);
+    var escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return '<div class="activity-line ' + cls + '">' + escaped + '</div>';
   }).join('');
   el.scrollTop = el.scrollHeight;
 }
 
 function renderConfig(cfg) {
-  const el = document.getElementById('configBody');
-  el.textContent = JSON.stringify(cfg, null, 2);
+  document.getElementById('configBody').textContent = JSON.stringify(cfg, null, 2);
 }
 
 function renderUptime(secs) {
   document.getElementById('uptime').textContent = 'Uptime: ' + fmtDuration(secs);
 }
 
-let failCount = 0;
+var failCount = 0;
 
 function refresh() {
   fetch('/api/status')

@@ -1,6 +1,6 @@
-# agent-team
+# Yamanote
 
-A multi-agent orchestrator that coordinates five Claude Code agent personas — **PM**, **Eng**, **Reviewer**, **SRE**, and **Supervisor** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
+A multi-agent orchestrator that coordinates six Claude Code agent personas — **Dispatcher**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
 
 Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd service.
 
@@ -9,7 +9,7 @@ Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd se
 The orchestrator runs a tick loop (every 10 seconds by default) that evaluates phases in order:
 
 ```
-service_recovery  →  rework  →  pm  →  eng  →  reviewer  →  sre  →  entropy_check  →  supervisor_check
+service_recovery  →  rework  →  dispatcher  →  conductor  →  inspector  →  signal  →  entropy_check  →  station_manager_check
 ```
 
 Each phase decides whether to launch its agent based on the current state of the pipeline. Only one instance of each agent runs at a time.
@@ -18,24 +18,25 @@ Each phase decides whether to launch its agent based on the current state of the
 
 | Agent | Model | Role |
 |---|---|---|
-| **PM** | Haiku | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
-| **Eng** | Sonnet | Implements specs on feature branches, one at a time |
-| **Reviewer** | Haiku | Reviews diffs against `main`. Merges acceptable work or requests changes |
-| **SRE** | Haiku | Monitors `app.log` for errors and files bug tickets into the backlog |
-| **Supervisor** | Haiku | Resets branches when Eng gets stuck in edit loops |
+| **Dispatcher** | Haiku | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
+| **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
+| **Inspector** | Haiku | Reviews diffs against `main`. Merges acceptable work or requests changes |
+| **Signal** | Haiku | Monitors `app.log` for errors and files bug tickets into the backlog |
+| **Station Manager** | Haiku | Resets branches when Conductor gets stuck in edit loops |
+| **Operations** | Sonnet | Analyzes orchestrator activity and implements small operational improvements |
 
 ### Pipeline flow
 
 ```
-PM creates spec
+Dispatcher creates spec
        ↓
-Eng implements on feature branch
+Conductor implements on feature branch
        ↓
-Reviewer reviews diff
+Inspector reviews diff
       ↙         ↘
   MERGED     CHANGES_REQUESTED
      ↓              ↓
- Service restart   Eng rework (up to 3 attempts)
+ Service restart   Conductor rework (up to 3 attempts)
                      ↓
                  Re-review
 ```
@@ -54,7 +55,7 @@ agent-team/
 ├── .gitignore
 └── agents/               # Runtime data (gitignored)
     ├── backlog/          # JSON spec files (features and bugs)
-    ├── review/           # Reviewer feedback files
+    ├── review/           # Inspector feedback files
     ├── logs/             # Stdout/stderr from each agent run
     └── activity.log      # Human-readable event log
 ```
@@ -167,7 +168,7 @@ Then open `http://<host>:8080/` in a browser. The page auto-refreshes every 10 s
 
 The dashboard shows:
 - **Agent cards** — status (running/idle/cooldown), PID, elapsed time, model
-- **Pipeline** — current stage (spec, engineering, review, rework, merge)
+- **Pipeline** — current stage (Spec, Engineer, Review, Rework, Merged)
 - **Stats** — launches per hour, sleep mode indicator
 - **Backlog** — queued specs with priority
 - **Activity feed** — color-coded event log
@@ -189,7 +190,7 @@ Drop a JSON spec file into `agents/backlog/`:
 }
 ```
 
-Eng picks up the highest-priority spec first (`high` > `medium` > `low`), then oldest within the same priority. The PM also generates specs automatically when the backlog is empty.
+Conductor picks up the highest-priority spec first (`high` > `medium` > `low`), then oldest within the same priority. The Dispatcher also generates specs automatically when the backlog is empty.
 
 ## Configuration reference
 
@@ -209,8 +210,8 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | Setting | Default | Description |
 |---|---|---|
 | `TICK_INTERVAL` | 10s | Seconds between orchestration ticks |
-| `AGENT_TIMEOUT_SECONDS` | 300s (5 min) | Max runtime per agent subprocess before termination |
-| `SLEEP_MODE_DURATION` | 3600s (1 hr) | How long to sleep when cost guardrail triggers |
+| `AGENT_TIMEOUT_SECONDS` | 600s (10 min) | Max runtime per agent subprocess before termination |
+| `SLEEP_MODE_DURATION` | 3600s (1 hr) | How long to sleep when fare limit triggers |
 
 ### Agent models
 
@@ -220,15 +221,16 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 
 ```python
 AGENT_MODELS = {
-    "pm":         "claude-haiku-4-5-20251001",
-    "eng":        "claude-sonnet-4-5-20250929",
-    "reviewer":   "claude-haiku-4-5-20251001",
-    "sre":        "claude-haiku-4-5-20251001",
-    "supervisor": "claude-haiku-4-5-20251001",
+    "dispatcher":      "claude-haiku-4-5-20251001",
+    "conductor":       "claude-sonnet-4-5-20250929",
+    "inspector":       "claude-haiku-4-5-20251001",
+    "signal":          "claude-haiku-4-5-20251001",
+    "station_manager": "claude-haiku-4-5-20251001",
+    "ops":             "claude-sonnet-4-5-20250929",
 }
 ```
 
-Eng uses Sonnet (the most capable coding model); all other agents use Haiku to minimize cost.
+Conductor uses Sonnet (the most capable coding model); all other agents use Haiku to minimize cost. Operations also uses Sonnet as it modifies the orchestrator itself.
 
 ### Agent throttling
 
@@ -238,11 +240,12 @@ Eng uses Sonnet (the most capable coding model); all other agents use Haiku to m
 
 ```python
 AGENT_MIN_INTERVALS = {
-    "pm":         1800,   # 30 minutes
-    "eng":        0,      # on-demand
-    "reviewer":   0,      # on-demand
-    "sre":        300,    # 5 minutes
-    "supervisor": 0,      # on-demand
+    "dispatcher":      900,    # 15 minutes
+    "conductor":       0,      # on-demand
+    "inspector":       0,      # on-demand
+    "signal":          300,    # 5 minutes
+    "station_manager": 0,      # on-demand
+    "ops":             3600,   # 1 hour
 }
 ```
 
@@ -253,36 +256,36 @@ AGENT_MIN_INTERVALS = {
 | `MAX_AGENT_LAUNCHES_PER_HOUR` | 30 | Triggers sleep mode when exceeded |
 | `AGENT_ERROR_COOLDOWN` | 120s | Base cooldown after an agent exits non-zero |
 | `MAX_ERROR_BACKOFF` | 3600s | Cap for exponential backoff on repeated failures |
-| `ENTROPY_FIX_COMMIT_THRESHOLD` | 5 | "fix"/"update" commits on a branch before Eng is fired and the branch is reset |
-| `MAX_ENG_EDITS_BEFORE_RESET` | 3 | File edit cycles before Supervisor resets the branch |
-| `MAX_REWORK_ATTEMPTS` | 3 | Reviewer change requests before the spec is abandoned |
-| `MAX_SPEC_TIMEOUTS` | 2 | Eng timeouts on a spec before it is dropped |
+| `ENTROPY_FIX_COMMIT_THRESHOLD` | 5 | "fix"/"update" commits on a branch before Conductor is fired and the branch is reset |
+| `MAX_ENG_EDITS_BEFORE_RESET` | 3 | File edit cycles before Station Manager resets the branch |
+| `MAX_REWORK_ATTEMPTS` | 3 | Inspector change requests before the spec is abandoned |
+| `MAX_SPEC_TIMEOUTS` | 2 | Conductor timeouts on a spec before it is dropped |
 | `SELF_PROJECT_DIR` | `BASE_DIR` | Prevents agents from modifying the orchestrator itself |
 
 ### Git
 
 | Setting | Default | Description |
 |---|---|---|
-| `TRUNK_BRANCH` | `main` | Branch that Eng branches from and Reviewer merges to |
+| `TRUNK_BRANCH` | `main` | Branch that Conductor branches from and Inspector merges to |
 
-## How the PM uses app logs
+## How the Dispatcher uses app logs
 
-The PM agent receives the last 100 lines of the target project's `app.log` (if it exists). It uses this data to:
+The Dispatcher agent receives the last 100 lines of the target project's `app.log` (if it exists). It uses this data to:
 
 - Identify which features are used most frequently
 - Check whether recently shipped features are seeing adoption
 - Spot recurring errors or user friction points
 - Prioritize refinements to popular features
 
-When no `app.log` exists, the PM falls back to codebase-only analysis.
+When no `app.log` exists, the Dispatcher falls back to codebase-only analysis.
 
 ## Safety features
 
 - **Self-protection** — agents cannot create specs targeting the orchestrator's own codebase
-- **Cost guardrail** — enters sleep mode for 1 hour after 30 launches in a rolling hour
+- **Fare limit** — enters sleep mode for 1 hour after 30 launches in a rolling hour
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
-- **Timeout enforcement** — agents are terminated after 5 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
+- **Timeout enforcement** — agents are terminated after 10 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
 - **Orphan recovery** — on startup, any `.in_progress` specs from a previous crash are restored to the backlog
 - **Working directory validation** — specs must target a directory under `DEVELOPMENT_DIR`
 

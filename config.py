@@ -1,4 +1,4 @@
-"""Agent prompt definitions and constants for the multi-agent orchestrator."""
+"""Agent prompt definitions and constants for the Yamanote orchestrator."""
 
 import os
 
@@ -22,23 +22,23 @@ SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 # Haiku for lightweight agents; Sonnet for the one that writes code.
 
 AGENT_MODELS = {
-    "pm":         "claude-haiku-4-5-20251001",
-    "eng":        "claude-sonnet-4-5-20250929",
-    "reviewer":   "claude-haiku-4-5-20251001",
-    "sre":        "claude-haiku-4-5-20251001",
-    "supervisor": "claude-haiku-4-5-20251001",
-    "meta":       "claude-sonnet-4-5-20250929",
+    "dispatcher":      "claude-haiku-4-5-20251001",
+    "conductor":       "claude-sonnet-4-5-20250929",
+    "inspector":       "claude-haiku-4-5-20251001",
+    "signal":          "claude-haiku-4-5-20251001",
+    "station_manager": "claude-haiku-4-5-20251001",
+    "ops":             "claude-sonnet-4-5-20250929",
 }
 
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
 
 AGENT_MIN_INTERVALS = {
-    "pm":         900,    # 15 minutes
-    "eng":        0,      # on-demand (spec-driven)
-    "reviewer":   0,      # on-demand (eng completion-driven)
-    "sre":        300,    # 5 minutes
-    "supervisor": 0,      # on-demand
-    "meta":       3600,   # 1 hour
+    "dispatcher":      900,    # 15 minutes
+    "conductor":       0,      # on-demand (spec-driven)
+    "inspector":       0,      # on-demand (eng completion-driven)
+    "signal":          300,    # 5 minutes
+    "station_manager": 0,      # on-demand
+    "ops":             3600,   # 1 hour
 }
 
 # ─── Claude invocation ───────────────────────────────────────────────────────
@@ -66,10 +66,10 @@ MAX_REWORK_ATTEMPTS = 3
 
 AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent after non-zero exit
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
-ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing eng
+ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing conductor
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
-MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Eng timeouts
-MAX_SRE_OPEN_BUGS = 3              # skip SRE launch if this many SRE bugs are already open
+MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
+MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 
 # ─── Dashboard (optional) ────────────────────────────────────────────────
@@ -77,10 +77,10 @@ DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 
 # ─── Agent system prompts ────────────────────────────────────────────────────
 
-PM_PROMPT = """\
-You are the PM agent. Your job is to create clear, actionable feature specs.
+DISPATCHER_PROMPT = """\
+You are the Dispatcher agent. Your job is to create clear, actionable feature specs.
 
-You must NEVER create specs that target the agent-team orchestrator itself. \
+You must NEVER create specs that target the Yamanote orchestrator itself. \
 Your job is to improve OTHER projects, not the orchestrator.
 
 The project you are managing is located at: {working_dir}
@@ -106,15 +106,15 @@ Instructions:
      "title": "short-kebab-title",
      "description": "Detailed description of what to build, acceptance criteria, and any constraints.",
      "priority": "high" | "medium" | "low",
-     "created_by": "pm",
+     "created_by": "dispatcher",
      "working_dir": "{working_dir}"
    }}
 4. Name the file: {timestamp}_{{title}}.json
 5. Only create ONE spec per invocation. Be specific and actionable.
 """
 
-ENG_PROMPT = """\
-You are the Eng agent. Your job is to implement features from backlog specs.
+CONDUCTOR_PROMPT = """\
+You are the Conductor agent. Your job is to implement features from backlog specs.
 
 The project you are working on is located at: {working_dir}
 All file operations MUST happen inside {working_dir}.
@@ -131,8 +131,8 @@ Instructions:
 7. When done, write a brief summary of what you changed to stdout.
 """
 
-ENG_REWORK_PROMPT = """\
-You are the Eng agent. Your job is to address reviewer feedback on an existing feature branch.
+CONDUCTOR_REWORK_PROMPT = """\
+You are the Conductor agent. Your job is to address inspector feedback on an existing feature branch.
 
 The project you are working on is located at: {working_dir}
 All file operations MUST happen inside {working_dir}.
@@ -144,18 +144,18 @@ Instructions:
 2. cd into {working_dir} first.
 3. You are on branch: {branch_name}
    Do NOT create a new branch. Stay on this branch.
-4. The reviewer requested changes. Here is their feedback:
+4. The inspector requested changes. Here is their feedback:
 
 {reviewer_feedback}
 
-5. Address each issue raised by the reviewer.
+5. Address each issue raised by the inspector.
 6. Commit your fixes with clear commit messages referencing the feedback.
 7. Do NOT merge — leave the branch for re-review.
 8. When done, write a brief summary of what you fixed to stdout.
 """
 
-REVIEWER_PROMPT = """\
-You are the Reviewer agent. Your job is to review code changes and merge or request fixes.
+INSPECTOR_PROMPT = """\
+You are the Inspector agent. Your job is to review code changes and merge or request fixes.
 
 The project is located at: {working_dir}
 The review feedback directory is: {review_dir}
@@ -177,12 +177,12 @@ Instructions:
 7. Write your feedback to exactly this path: {feedback_path}
 """
 
-SRE_PROMPT = """\
-You are the SRE agent. Your job is to monitor application health and file bug reports.
+SIGNAL_PROMPT = """\
+You are the Signal agent. Your job is to monitor application health and file bug reports.
 
 The project is located at: {working_dir}
 
-Currently open SRE bug tickets (do NOT file duplicates):
+Currently open Signal bug tickets (do NOT file duplicates):
 {existing_bugs}
 
 Instructions:
@@ -199,21 +199,21 @@ Instructions:
      "title": "bug-short-description",
      "description": "Detailed description of the issue found in logs, including relevant log lines.",
      "priority": "high",
-     "created_by": "sre",
+     "created_by": "signal",
      "working_dir": "{working_dir}"
    }}
    Name it: {timestamp}_bug_{{summary}}.json
 5. If logs look healthy, simply report "No issues found" to stdout.
 """
 
-SUPERVISOR_PROMPT = """\
-You are the Supervisor agent. Your job is to oversee the development workflow.
+STATION_MANAGER_PROMPT = """\
+You are the Station Manager agent. Your job is to oversee the development workflow.
 
 Current status:
 - Active agents: {active_agents}
 - Backlog items: {backlog_count}
 - Recent merges: {recent_merges}
-- Eng edit counts: {eng_edits}
+- Conductor edit counts: {eng_edits}
 
 Instructions:
 1. Review the current state of the development workflow.
@@ -221,8 +221,8 @@ Instructions:
 3. Report your assessment to stdout.
 """
 
-META_PROMPT = """\
-You are the Meta agent. Your job is to analyze the orchestrator's recent activity \
+OPS_PROMPT = """\
+You are the Operations agent. Your job is to analyze the orchestrator's recent activity \
 and implement ONE small operational improvement to the orchestrator itself.
 
 Working directory: {base_dir}
@@ -251,18 +251,18 @@ Instructions:
 
 4. STRICT RULES:
    - Make only ONE change (single concern)
-   - Do NOT modify META_PROMPT or the meta agent's own settings
-   - Do NOT modify _phase_meta, _gather_meta_context, or _request_self_restart
+   - Do NOT modify OPS_PROMPT or the ops agent's own settings
+   - Do NOT modify _phase_ops, _gather_ops_context, or _request_self_restart
    - Do NOT disable or weaken any guardrails (cost limits, cooldowns, self-project guard)
    - Do NOT add new agent types, phases, or major features
    - Do NOT add new dependencies beyond the standard library
 
 5. After editing, validate:
-   python3 -c "import config; import orchestrator; orchestrator.Supervisor(); print('OK')"
+   python3 -c "import config; import orchestrator; orchestrator.StationManager(); print('OK')"
 
 6. If validation passes, commit ONLY files you changed:
    git add orchestrator.py config.py
-   git commit -m "Meta: <brief description of what you changed and why>"
+   git commit -m "Ops: <brief description of what you changed and why>"
 
 7. If validation fails, rollback: git checkout .
 
