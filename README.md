@@ -1,5 +1,7 @@
 # Yamanote
 
+![Yamanote](img/yamanote_banner.png)
+
 A multi-agent orchestrator that coordinates six Claude Code agent personas — **Dispatcher**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
 
 Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd service.
@@ -173,6 +175,8 @@ The dashboard shows:
 - **Backlog** — queued specs with priority
 - **Activity feed** — color-coded event log
 - **Configuration** — collapsible current settings
+
+![Dashboard](img/yamanote_dashboard.png)
 
 A JSON API is also available at `GET /api/status` for programmatic access.
 
