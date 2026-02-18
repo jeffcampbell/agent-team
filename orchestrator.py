@@ -216,6 +216,16 @@ class StationManager:
             self.active_agents[name] = None
             # Set cooldown on non-zero exit with exponential backoff
             if rc != 0:
+                # Detect API rate-limit responses and enter sleep mode to avoid
+                # hammering a quota wall with repeated retries (seen as "out of extra usage")
+                agent_output = agent.get_output() + agent.get_stderr()
+                if "out of extra usage" in agent_output or "rate limit" in agent_output.lower():
+                    self.sleep_until = time.time() + config.SLEEP_MODE_DURATION
+                    activity(
+                        f"RATE LIMIT [{name}] — API quota exhausted, "
+                        f"entering SERVICE SUSPENDED for {config.SLEEP_MODE_DURATION}s"
+                    )
+                    return False
                 self.consecutive_failures[name] = self.consecutive_failures.get(name, 0) + 1
                 backoff = min(
                     config.AGENT_ERROR_COOLDOWN * (2 ** self.consecutive_failures[name]),
