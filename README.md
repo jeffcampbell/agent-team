@@ -46,6 +46,8 @@ Reviewer reviews diff
 agent-team/
 ├── orchestrator.py       # Main orchestration loop
 ├── config.py             # All configuration and agent prompts
+├── dashboard.py          # Optional web dashboard server
+├── dashboard.html        # Dashboard UI (single-page, dark theme)
 ├── SETUP.md              # AI-agent-friendly setup instructions
 ├── agent-team.service    # systemd unit file
 ├── .env.example          # Template for environment variables
@@ -147,6 +149,34 @@ tail -f agents/activity.log
 ls -lt agents/logs/ | head
 ```
 
+### 6. Web dashboard (optional)
+
+A locally-hosted web dashboard gives an at-a-glance view of agent status, pipeline progress, backlog, and recent activity — accessible from any device on the LAN. Disabled by default.
+
+**Enable via CLI flag:**
+```bash
+python3 orchestrator.py --dashboard              # port 8080
+python3 orchestrator.py --dashboard-port 9090    # custom port
+```
+
+**Enable via environment variable** (recommended for systemd):
+```bash
+# Add to .env
+AGENT_TEAM_DASHBOARD_PORT=8080
+```
+
+Then open `http://<host>:8080/` in a browser. The page auto-refreshes every 10 seconds.
+
+The dashboard shows:
+- **Agent cards** — status (running/idle/cooldown), PID, elapsed time, model
+- **Pipeline** — current stage (spec, engineering, review, rework, merge)
+- **Stats** — launches per hour, sleep mode indicator
+- **Backlog** — queued specs with priority
+- **Activity feed** — color-coded event log
+- **Configuration** — collapsible current settings
+
+A JSON API is also available at `GET /api/status` for programmatic access.
+
 ## Adding work manually
 
 Drop a JSON spec file into `agents/backlog/`:
@@ -174,6 +204,7 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TEAM_DEV_DIR` | `~/Development` | Parent directory containing your project(s) |
 | `AGENT_TEAM_DEFAULT_PROJECT` | `quote-bot` | Default project directory name under `AGENT_TEAM_DEV_DIR` |
 | `AGENT_TEAM_SERVICE_RESTART_CMD` | *(empty — skip restart)* | Shell command to restart your app after a merge |
+| `AGENT_TEAM_DASHBOARD_PORT` | `0` *(disabled)* | Port for the web dashboard (`0` = off) |
 | `DISCORD_WEBHOOK_URL` | *(unset — disable)* | Discord webhook URL for merge notifications |
 
 ### Timing

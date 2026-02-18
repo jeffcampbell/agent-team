@@ -155,6 +155,9 @@ class Supervisor:
         # Meta agent: track HEAD before meta launch to detect new commits
         self._meta_head_before: str | None = None
 
+        # Uptime tracking (used by dashboard)
+        self.start_time: float = time.time()
+
         # Don't run meta immediately on startup — wait for activity to accumulate
         self.last_launch_times["meta"] = time.time()
 
@@ -942,5 +945,22 @@ class Supervisor:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Multi-agent orchestrator")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Enable web dashboard on port 8080")
+    parser.add_argument("--dashboard-port", type=int, default=0, metavar="PORT",
+                        help="Enable web dashboard on a specific port")
+    args = parser.parse_args()
+
+    # Priority: --dashboard-port > --dashboard (8080) > env var > disabled
+    dash_port = args.dashboard_port or (8080 if args.dashboard else config.DASHBOARD_PORT)
+
     supervisor = Supervisor()
+
+    if dash_port:
+        from dashboard import start_dashboard
+        start_dashboard(supervisor, dash_port)
+
     supervisor.run()

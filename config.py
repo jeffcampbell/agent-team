@@ -75,6 +75,9 @@ MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this ma
 MAX_SRE_OPEN_BUGS = 3              # skip SRE launch if this many SRE bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 
+# ─── Dashboard (optional) ────────────────────────────────────────────────
+DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
+
 # ─── Agent system prompts ────────────────────────────────────────────────────
 
 PM_PROMPT = """\

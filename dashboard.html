@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Team Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px;
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+  }
+  .header h1 { font-size: 1.3rem; color: #e94560; }
+  .header-right { display: flex; gap: 20px; font-size: 0.85rem; color: #888; }
+
+  /* Connection banner */
+  .conn-lost {
+    display: none; padding: 8px; text-align: center;
+    background: #e94560; color: #fff; font-weight: bold; font-size: 0.85rem;
+  }
+  .conn-lost.visible { display: block; }
+
+  /* Agent cards grid */
+  .agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px; padding: 16px 24px;
+  }
+  .agent-card {
+    background: #16213e; border-radius: 8px; padding: 14px;
+    border-left: 4px solid #444;
+  }
+  .agent-card.running  { border-left-color: #4ecca3; }
+  .agent-card.idle     { border-left-color: #555; }
+  .agent-card.cooldown { border-left-color: #f0a500; }
+  .agent-name { font-weight: 600; font-size: 1rem; margin-bottom: 6px; text-transform: uppercase; }
+  .agent-badge {
+    display: inline-block; font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 10px; font-weight: 600; margin-left: 8px;
+  }
+  .badge-running  { background: #4ecca3; color: #1a1a2e; }
+  .badge-idle     { background: #444; color: #aaa; }
+  .badge-cooldown { background: #f0a500; color: #1a1a2e; }
+  .agent-detail { font-size: 0.78rem; color: #888; margin-top: 3px; }
+
+  /* Pipeline */
+  .pipeline-section { padding: 8px 24px 16px; }
+  .pipeline-section h2 { font-size: 0.95rem; color: #888; margin-bottom: 10px; }
+  .pipeline {
+    display: flex; align-items: center; gap: 0;
+    background: #16213e; border-radius: 8px; padding: 12px 16px;
+  }
+  .pipeline-stage {
+    padding: 8px 18px; border-radius: 6px; font-size: 0.82rem;
+    background: #0f3460; color: #666; font-weight: 600;
+  }
+  .pipeline-stage.active { background: #4ecca3; color: #1a1a2e; }
+  .pipeline-arrow { color: #444; margin: 0 8px; font-size: 1.1rem; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex; gap: 24px; padding: 8px 24px 12px;
+    font-size: 0.82rem; color: #888; flex-wrap: wrap;
+  }
+  .stat-item strong { color: #e0e0e0; }
+  .stat-sleep { color: #f0a500; font-weight: 600; }
+
+  /* Bottom two-column layout */
+  .bottom-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 16px; padding: 0 24px 24px;
+  }
+  @media (max-width: 800px) { .bottom-grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: #16213e; border-radius: 8px; padding: 14px;
+    max-height: 400px; overflow-y: auto;
+  }
+  .panel h3 { font-size: 0.9rem; color: #888; margin-bottom: 10px; }
+
+  /* Backlog */
+  .backlog-item {
+    padding: 6px 0; border-bottom: 1px solid #0f3460;
+    font-size: 0.8rem;
+  }
+  .backlog-item:last-child { border-bottom: none; }
+  .backlog-title { color: #e0e0e0; font-weight: 600; }
+  .backlog-meta { color: #666; font-size: 0.72rem; }
+  .priority-high   { color: #e94560; }
+  .priority-medium { color: #f0a500; }
+  .priority-low    { color: #4ecca3; }
+
+  /* Activity feed */
+  .activity-feed {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.72rem; line-height: 1.6;
+  }
+  .activity-line { white-space: pre-wrap; word-break: break-all; }
+  .activity-line.line-start  { color: #4ecca3; }
+  .activity-line.line-done   { color: #888; }
+  .activity-line.line-error  { color: #e94560; }
+  .activity-line.line-merged { color: #4ecca3; font-weight: 600; }
+  .activity-line.line-meta   { color: #b388ff; }
+  .activity-line.line-default { color: #ccc; }
+
+  /* Config (collapsible) */
+  .config-section { padding: 0 24px 24px; }
+  details { background: #16213e; border-radius: 8px; }
+  details summary {
+    padding: 10px 14px; cursor: pointer; font-size: 0.85rem; color: #888;
+  }
+  details summary:hover { color: #e0e0e0; }
+  .config-body {
+    padding: 0 14px 14px;
+    font-family: monospace; font-size: 0.75rem; color: #888;
+    white-space: pre-wrap;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1a2e; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Agent Team Dashboard</h1>
+  <div class="header-right">
+    <span id="clock"></span>
+    <span id="uptime"></span>
+  </div>
+</div>
+<div class="conn-lost" id="connBanner">Connection lost — retrying...</div>
+
+<div class="agents-grid" id="agentsGrid"></div>
+
+<div class="pipeline-section">
+  <h2>Pipeline</h2>
+  <div class="pipeline" id="pipeline"></div>
+</div>
+
+<div class="stats-bar" id="statsBar"></div>
+
+<div class="bottom-grid">
+  <div class="panel" id="backlogPanel">
+    <h3>Backlog (<span id="backlogCount">0</span>)</h3>
+    <div id="backlogList"></div>
+  </div>
+  <div class="panel" id="activityPanel">
+    <h3>Activity</h3>
+    <div class="activity-feed" id="activityFeed"></div>
+  </div>
+</div>
+
+<div class="config-section">
+  <details>
+    <summary>Configuration</summary>
+    <div class="config-body" id="configBody"></div>
+  </details>
+</div>
+
+<script>
+const REFRESH_MS = 10000;
+
+function fmtDuration(secs) {
+  if (secs == null) return '-';
+  const s = Math.floor(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}
+
+function renderAgents(agents) {
+  const grid = document.getElementById('agentsGrid');
+  grid.innerHTML = '';
+  for (const [name, info] of Object.entries(agents)) {
+    const status = info.status || 'idle';
+    const card = document.createElement('div');
+    card.className = 'agent-card ' + status;
+
+    let details = '';
+    if (status === 'running') {
+      details = '<div class="agent-detail">PID ' + info.pid + ' &mdash; ' + fmtDuration(info.running_for_seconds) + '</div>';
+    } else if (status === 'cooldown') {
+      details = '<div class="agent-detail">Retry in ' + fmtDuration(info.cooldown_remaining_seconds) + '</div>';
+    } else {
+      details = '<div class="agent-detail">Idle</div>';
+    }
+
+    const badgeCls = 'badge-' + status;
+    card.innerHTML =
+      '<div class="agent-name">' + name +
+      '<span class="agent-badge ' + badgeCls + '">' + status + '</span></div>' +
+      details +
+      '<div class="agent-detail">' + (info.model || '').split('-').slice(-2).join('-') + '</div>';
+    grid.appendChild(card);
+  }
+}
+
+function renderPipeline(pipeline) {
+  const el = document.getElementById('pipeline');
+  const stages = [
+    { key: 'idle', label: 'Spec' },
+    { key: 'engineering', label: 'Engineering' },
+    { key: 'reviewing', label: 'Review' },
+    { key: 'rework', label: 'Rework' },
+    { key: 'merged', label: 'Merge' },
+  ];
+  let html = '';
+  for (let i = 0; i < stages.length; i++) {
+    const s = stages[i];
+    const active = (pipeline.stage === s.key) ? ' active' : '';
+    html += '<div class="pipeline-stage' + active + '">' + s.label + '</div>';
+    if (i < stages.length - 1) html += '<span class="pipeline-arrow">&rarr;</span>';
+  }
+  if (pipeline.current_spec) {
+    html += '<span style="margin-left:16px;font-size:0.8rem;color:#aaa">' +
+      pipeline.current_spec + ' (rework ' + pipeline.rework_count + '/' + pipeline.max_rework + ')</span>';
+  }
+  el.innerHTML = html;
+}
+
+function renderStats(stats) {
+  const el = document.getElementById('statsBar');
+  let html = '<span class="stat-item">Launches/hr: <strong>' +
+    stats.launches_last_hour + '/' + stats.max_launches_per_hour + '</strong></span>';
+  if (stats.sleep_mode_active) {
+    html += '<span class="stat-sleep">SLEEP MODE &mdash; ' +
+      fmtDuration(stats.sleep_remaining_seconds) + ' remaining</span>';
+  }
+  el.innerHTML = html;
+}
+
+function renderBacklog(backlog) {
+  document.getElementById('backlogCount').textContent = backlog.count;
+  const list = document.getElementById('backlogList');
+  if (!backlog.specs || backlog.specs.length === 0) {
+    list.innerHTML = '<div style="color:#555;font-size:0.8rem">No specs in backlog</div>';
+    return;
+  }
+  list.innerHTML = backlog.specs.map(function(s) {
+    const pcls = 'priority-' + (s.priority || 'medium');
+    return '<div class="backlog-item">' +
+      '<div class="backlog-title">' + (s.title || '(untitled)') + '</div>' +
+      '<div class="backlog-meta"><span class="' + pcls + '">' + (s.priority || 'medium') +
+      '</span> &middot; ' + (s.created_by || '?') + ' &middot; ' + (s.filename || '') + '</div></div>';
+  }).join('');
+}
+
+function classifyLine(line) {
+  const l = line.toLowerCase();
+  if (l.includes('start ') || l.includes('start\t')) return 'line-start';
+  if (l.includes('done ') || l.includes('done\t')) return 'line-done';
+  if (l.includes('error') || l.includes('timeout') || l.includes('cooldown') || l.includes('fired') || l.includes('abandoned')) return 'line-error';
+  if (l.includes('merged')) return 'line-merged';
+  if (l.includes('meta')) return 'line-meta';
+  return 'line-default';
+}
+
+function renderActivity(lines) {
+  const el = document.getElementById('activityFeed');
+  if (!lines || lines.length === 0) {
+    el.innerHTML = '<div style="color:#555">No activity yet</div>';
+    return;
+  }
+  el.innerHTML = lines.slice(-80).map(function(line) {
+    const cls = classifyLine(line);
+    const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<div class="activity-line ' + cls + '">' + escaped + '</div>';
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function renderConfig(cfg) {
+  const el = document.getElementById('configBody');
+  el.textContent = JSON.stringify(cfg, null, 2);
+}
+
+function renderUptime(secs) {
+  document.getElementById('uptime').textContent = 'Uptime: ' + fmtDuration(secs);
+}
+
+let failCount = 0;
+
+function refresh() {
+  fetch('/api/status')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      failCount = 0;
+      document.getElementById('connBanner').classList.remove('visible');
+      renderUptime(data.uptime_seconds);
+      renderAgents(data.agents || {});
+      renderPipeline(data.pipeline || {});
+      renderStats(data.stats || {});
+      renderBacklog(data.backlog || {});
+      renderActivity(data.activity || []);
+      renderConfig(data.config || {});
+    })
+    .catch(function() {
+      failCount++;
+      if (failCount >= 2) {
+        document.getElementById('connBanner').classList.add('visible');
+      }
+    });
+}
+
+updateClock();
+setInterval(updateClock, 1000);
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
