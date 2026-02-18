@@ -152,6 +152,7 @@ class Supervisor:
 
         # SRE high-water mark: only analyze new log lines since last run
         self.sre_log_offsets: dict[str, int] = {}  # project_dir → byte offset in app.log
+        self._sre_prev_offsets: dict[str, int] = {}  # offset before last SRE read (for rollback on failure)
 
         # Meta agent: track HEAD before meta launch to detect new commits
         self._meta_head_before: str | None = None
@@ -224,8 +225,12 @@ class Supervisor:
                 cooldown_until = time.time() + backoff
                 self.agent_cooldowns[name] = cooldown_until
                 activity(f"COOLDOWN [{name}] — failure #{self.consecutive_failures[name]}, retry after {backoff}s")
+                # SRE failed — roll back log offsets so the same lines are retried next run
+                if name == "sre":
+                    self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
+            self._sre_prev_offsets.clear()
             return False
         if agent.is_timed_out():
             self._kill_timed_out_agent(name, agent)
@@ -254,6 +259,11 @@ class Supervisor:
         self.agent_cooldowns[name] = time.time() + backoff
         activity(f"COOLDOWN [{name}] — timeout #{self.consecutive_failures[name]}, retry after {backoff}s")
 
+        # SRE timed out — roll back log offsets so those lines are retried next run
+        if name == "sre":
+            self.sre_log_offsets.update(self._sre_prev_offsets)
+        self._sre_prev_offsets.clear()
+
         if name == "eng" and self.current_eng_spec:
             spec_path = self.current_eng_spec
             self.spec_timeout_counts[spec_path] = self.spec_timeout_counts.get(spec_path, 0) + 1
@@ -263,6 +273,10 @@ class Supervisor:
                 activity(
                     f"DROPPED spec after {timeouts} timeouts: {os.path.basename(spec_path)}"
                 )
+                # Reset eng failure counter so the next spec doesn't inherit this
+                # spec's timeout backoff — each spec deserves a fresh start.
+                self.consecutive_failures.pop("eng", None)
+                self.agent_cooldowns.pop("eng", None)
                 in_progress = spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
@@ -272,6 +286,14 @@ class Supervisor:
                 if cwd and branch and self._git_has_branch(branch, cwd=cwd):
                     self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
                     self._git("branch", "-D", branch, cwd=cwd)
+                # Delete any stale reviewer feedback for this branch
+                if branch:
+                    feedback_path = os.path.join(
+                        config.REVIEW_DIR,
+                        f"{branch.replace('/', '_')}_feedback.md",
+                    )
+                    if os.path.exists(feedback_path):
+                        os.remove(feedback_path)
                 del self.spec_timeout_counts[spec_path]
             else:
                 in_progress = spec_path + ".in_progress"
@@ -282,6 +304,7 @@ class Supervisor:
             self.current_eng_branch = None
             self.current_eng_spec = None
             self.current_working_dir = None
+            self.eng_file_edits.clear()
 
     def _launch_agent(self, name: str, prompt: str, cwd: str | None = None) -> AgentProcess | None:
         # Error cooldown check
@@ -364,13 +387,13 @@ class Supervisor:
             return ""
 
         if project_dir not in self.sre_log_offsets:
-            # First run: fall back to tail, then store current EOF offset
-            tail = self._read_app_log_tail(project_dir, 100)
+            # First run (or after restart): set high-water mark to current EOF.
+            # Don't re-analyze logs that were already seen before the restart.
             try:
                 self.sre_log_offsets[project_dir] = os.path.getsize(log_path)
             except OSError:
                 pass
-            return tail
+            return ""
 
         stored_offset = self.sre_log_offsets[project_dir]
         try:
@@ -389,6 +412,7 @@ class Supervisor:
             f.seek(stored_offset)
             new_content = f.read()
 
+        self._sre_prev_offsets[project_dir] = stored_offset
         self.sre_log_offsets[project_dir] = file_size
         return new_content
 
@@ -488,6 +512,14 @@ class Supervisor:
                 eng.proc.wait()
             eng.save_log(marker="[FIRED — ENTROPY]")
         self.active_agents["eng"] = None
+
+        # Delete any stale reviewer feedback for this branch
+        feedback_path = os.path.join(
+            config.REVIEW_DIR,
+            f"{branch.replace('/', '_')}_feedback.md",
+        )
+        if os.path.exists(feedback_path):
+            os.remove(feedback_path)
 
         # Reset branch
         self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
@@ -643,7 +675,16 @@ class Supervisor:
 
         diff = self._git_diff_trunk(branch, cwd=cwd)
         if not diff:
-            log.info("No diff on branch %s — skipping review", branch)
+            activity(f"REVIEWER — no diff on branch {branch}, cleaning up empty branch")
+            self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
+            self._git("branch", "-D", branch, cwd=cwd)
+            if self.current_eng_spec:
+                in_progress = self.current_eng_spec + ".in_progress"
+                if os.path.exists(in_progress):
+                    os.remove(in_progress)
+            self.current_eng_branch = None
+            self.current_eng_spec = None
+            self.current_working_dir = None
             return
 
         feedback_path = os.path.join(
@@ -696,6 +737,9 @@ class Supervisor:
             in_progress = spec_path + ".in_progress"
             if os.path.exists(in_progress):
                 os.remove(in_progress)
+            # Clean up the feedback file so it doesn't accumulate
+            if os.path.exists(feedback_path):
+                os.remove(feedback_path)
             self.eng_file_edits.clear()
             self.current_eng_branch = None
             self.current_eng_spec = None
@@ -725,7 +769,7 @@ class Supervisor:
         )
         self._launch_agent("eng", prompt, cwd=cwd)
         self._eng_edits_tallied = False
-        os.rename(feedback_path, feedback_path + ".addressed")
+        os.remove(feedback_path)
 
     def _phase_sre(self):
         """If app.log exists in the current project, launch SRE to analyze."""
@@ -801,6 +845,14 @@ class Supervisor:
             os.rename(self.current_eng_spec + ".in_progress", self.current_eng_spec)
             activity(f"RE-QUEUED spec: {os.path.basename(self.current_eng_spec)}")
 
+        # Delete any stale reviewer feedback for this branch
+        feedback_path = os.path.join(
+            config.REVIEW_DIR,
+            f"{branch.replace('/', '_')}_feedback.md",
+        )
+        if os.path.exists(feedback_path):
+            os.remove(feedback_path)
+
         self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
         self._git("branch", "-D", branch, cwd=cwd)
 
@@ -863,6 +915,11 @@ class Supervisor:
 
         if self.current_eng_spec and os.path.exists(self.current_eng_spec + ".in_progress"):
             os.remove(self.current_eng_spec + ".in_progress")
+
+        # Clean up the feedback file so it doesn't accumulate and can't falsely
+        # re-trigger service recovery if the same branch name is reused later.
+        if os.path.exists(feedback_path):
+            os.remove(feedback_path)
 
         self.eng_file_edits.clear()
         self.current_eng_branch = None
