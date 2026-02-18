@@ -97,8 +97,6 @@ AGENT_TEAM_DEFAULT_PROJECT=my-app
 # Command to restart your app after a merge (leave empty to skip)
 AGENT_TEAM_SERVICE_RESTART_CMD=sudo systemctl restart my-app.service
 
-# Discord webhook for merge notifications (optional)
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 ### 3. Run manually
@@ -205,7 +203,6 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TEAM_DEFAULT_PROJECT` | `quote-bot` | Default project directory name under `AGENT_TEAM_DEV_DIR` |
 | `AGENT_TEAM_SERVICE_RESTART_CMD` | *(empty — skip restart)* | Shell command to restart your app after a merge |
 | `AGENT_TEAM_DASHBOARD_PORT` | `0` *(disabled)* | Port for the web dashboard (`0` = off) |
-| `DISCORD_WEBHOOK_URL` | *(unset — disable)* | Discord webhook URL for merge notifications |
 
 ### Timing
 
@@ -267,12 +264,6 @@ AGENT_MIN_INTERVALS = {
 | Setting | Default | Description |
 |---|---|---|
 | `TRUNK_BRANCH` | `main` | Branch that Eng branches from and Reviewer merges to |
-
-### Notifications
-
-| Setting | Source | Description |
-|---|---|---|
-| `DISCORD_WEBHOOK_URL` | `DISCORD_WEBHOOK_URL` env var | Posts an embed to Discord on each successful merge |
 
 ## How the PM uses app logs
 

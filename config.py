@@ -12,10 +12,6 @@ ACTIVITY_LOG = os.path.join(BASE_DIR, "agents", "activity.log")
 DEVELOPMENT_DIR = os.environ.get("AGENT_TEAM_DEV_DIR", os.path.expanduser("~/Development"))
 DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "quote-bot")
 
-# ─── Discord webhook ────────────────────────────────────────────────────────
-
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
 TICK_INTERVAL = 10  # seconds between orchestration ticks

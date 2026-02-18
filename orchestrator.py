@@ -9,8 +9,6 @@ import re
 import subprocess
 import sys
 import time
-import urllib.request
-import urllib.error
 from collections import deque
 
 import config
@@ -450,35 +448,6 @@ class Supervisor:
             return False
         return os.path.realpath(working_dir) == os.path.realpath(config.SELF_PROJECT_DIR)
 
-    # ─── Discord notifications ───────────────────────────────────────────
-
-    def _notify_discord(self, spec_data: dict, branch: str):
-        """Post a merge notification to Discord. Fails silently."""
-        url = config.DISCORD_WEBHOOK_URL
-        if not url:
-            return
-        try:
-            title = spec_data.get("title", "unknown")
-            description = spec_data.get("description", "")
-            payload = json.dumps({
-                "embeds": [{
-                    "title": f"Merged: {title}",
-                    "description": description[:2048],
-                    "color": 0x57F287,  # green
-                    "fields": [{"name": "Branch", "value": branch, "inline": True}],
-                }]
-            }).encode()
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=10)
-            log.info("Discord notification sent for %s", title)
-        except Exception as exc:
-            log.warning("Discord notification failed: %s", exc)
-
     # ─── Entropy check ───────────────────────────────────────────────────
 
     def _count_fix_commits_on_branch(self, branch: str, cwd: str | None = None) -> int:
@@ -896,18 +865,6 @@ class Supervisor:
         if self._git_has_branch(self.current_eng_branch, cwd=cwd):
             self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
             self._git("branch", "-D", self.current_eng_branch, cwd=cwd)
-
-        # Notify Discord before cleaning up state
-        if self.current_eng_spec:
-            spec_read = self.current_eng_spec + ".in_progress"
-            if not os.path.exists(spec_read):
-                spec_read = self.current_eng_spec
-            try:
-                with open(spec_read) as f:
-                    spec_data = json.load(f)
-                self._notify_discord(spec_data, self.current_eng_branch)
-            except (json.JSONDecodeError, OSError) as exc:
-                log.warning("Could not read spec for Discord notification: %s", exc)
 
         if not config.SERVICE_RESTART_CMD:
             activity("SERVICE restart skipped (no SERVICE_RESTART_CMD configured)")

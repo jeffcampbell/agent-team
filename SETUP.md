@@ -29,8 +29,7 @@ find ~/Development -maxdepth 2 -name ".git" -type d 2>/dev/null | sed 's|/.git$|
 Present the list to the user and ask:
 1. **Which project should agent-team manage?** (pick one from the list, or let them type a path)
 2. **Should agent-team restart a service after merging?** If yes, ask for the systemd service name (e.g. `my-app.service`). If no, leave it blank.
-3. **Do they have a Discord webhook URL for merge notifications?** (optional, skip if not)
-4. **Would you like to enable the web dashboard?** It provides a real-time status page showing agent activity, pipeline progress, and backlog — accessible from any device on the local network. If yes, ask what port to use (default: `8080`). If no, skip it.
+3. **Would you like to enable the web dashboard?** It provides a real-time status page showing agent activity, pipeline progress, and backlog — accessible from any device on the local network. If yes, ask what port to use (default: `8080`). If no, skip it.
 
 ## Step 3: Write the `.env` file
 
@@ -51,7 +50,6 @@ AGENT_TEAM_SERVICE_RESTART_CMD=sudo systemctl restart my-app.service
 - `AGENT_TEAM_DEV_DIR` = the parent directory (e.g. `~/Development`)
 - `AGENT_TEAM_DEFAULT_PROJECT` = just the directory name, not the full path (e.g. `my-app`)
 - `AGENT_TEAM_SERVICE_RESTART_CMD` = leave empty or omit entirely if no service restart is needed
-- `DISCORD_WEBHOOK_URL` = omit if not provided
 - `AGENT_TEAM_DASHBOARD_PORT` = the port number if the user wants the dashboard (e.g. `8080`), or omit/set to `0` to disable
 
 ## Step 4: Validate
