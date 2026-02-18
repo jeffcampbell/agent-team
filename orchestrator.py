@@ -651,6 +651,9 @@ class StationManager:
             return
         if self._is_agent_active("conductor"):
             return
+        # Don't log intent if Inspector is in cooldown — _launch_agent would silently skip
+        if "inspector" in self.agent_cooldowns and time.time() < self.agent_cooldowns["inspector"]:
+            return
 
         branch = self.current_conductor_branch
         cwd = self.current_working_dir
