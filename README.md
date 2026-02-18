@@ -259,6 +259,7 @@ AGENT_MIN_INTERVALS = {
 | `ENTROPY_FIX_COMMIT_THRESHOLD` | 5 | "fix"/"update" commits on a branch before Eng is fired and the branch is reset |
 | `MAX_ENG_EDITS_BEFORE_RESET` | 3 | File edit cycles before Supervisor resets the branch |
 | `MAX_REWORK_ATTEMPTS` | 3 | Reviewer change requests before the spec is abandoned |
+| `MAX_SPEC_TIMEOUTS` | 2 | Eng timeouts on a spec before it is dropped |
 | `SELF_PROJECT_DIR` | `BASE_DIR` | Prevents agents from modifying the orchestrator itself |
 
 ### Git
@@ -290,7 +291,7 @@ When no `app.log` exists, the PM falls back to codebase-only analysis.
 - **Cost guardrail** — enters sleep mode for 1 hour after 30 launches in a rolling hour
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
-- **Timeout enforcement** — agents are terminated after 5 minutes
+- **Timeout enforcement** — agents are terminated after 5 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
 - **Orphan recovery** — on startup, any `.in_progress` specs from a previous crash are restored to the backlog
 - **Working directory validation** — specs must target a directory under `DEVELOPMENT_DIR`
 

@@ -69,11 +69,19 @@ def _build_status_payload(supervisor) -> dict:
             cooldown_rem = None
 
         last_launch = last_launch_times.get(name)
+        min_interval = config.AGENT_MIN_INTERVALS.get(name, 0)
+        next_run = None
+        if min_interval > 0 and last_launch is not None and status == "idle":
+            remaining = (last_launch + min_interval) - now
+            if remaining > 0:
+                next_run = remaining
+
         agents_out[name] = {
             "status": status,
             "pid": pid,
             "running_for_seconds": round(running_for, 1) if running_for is not None else None,
             "cooldown_remaining_seconds": round(cooldown_rem, 1) if cooldown_rem is not None else None,
+            "next_run_seconds": round(next_run, 1) if next_run is not None else None,
             "last_launch": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_launch)) if last_launch else None,
             "consecutive_failures": consecutive_failures.get(name, 0),
             "model": config.AGENT_MODELS.get(name, "unknown"),

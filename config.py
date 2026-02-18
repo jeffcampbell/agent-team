@@ -37,7 +37,7 @@ AGENT_MODELS = {
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
 
 AGENT_MIN_INTERVALS = {
-    "pm":         1800,   # 30 minutes
+    "pm":         900,    # 15 minutes
     "eng":        0,      # on-demand (spec-driven)
     "reviewer":   0,      # on-demand (eng completion-driven)
     "sre":        300,    # 5 minutes
@@ -72,6 +72,7 @@ AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent af
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
 ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing eng
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
+MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Eng timeouts
 MAX_SRE_OPEN_BUGS = 3              # skip SRE launch if this many SRE bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 

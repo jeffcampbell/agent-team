@@ -138,6 +138,7 @@ class Supervisor:
         self.current_eng_branch: str | None = None
         self.current_working_dir: str | None = None
         self.rework_counts: dict[str, int] = {}
+        self.spec_timeout_counts: dict[str, int] = {}  # spec path → timeout streak
 
         # Cost guardrail: track agent launches in a rolling window
         self.launch_times: deque[float] = deque()
@@ -158,7 +159,8 @@ class Supervisor:
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
 
-        # Don't run meta immediately on startup — wait for activity to accumulate
+        # Don't run PM or meta immediately on startup — wait for activity to accumulate
+        self.last_launch_times["pm"] = time.time()
         self.last_launch_times["meta"] = time.time()
 
         # Recover orphaned .in_progress specs from previous runs
@@ -243,11 +245,40 @@ class Supervisor:
         agent.save_log(marker="[TIMEOUT]")
         self.active_agents[name] = None
 
+        # Treat timeouts as failures for cooldown purposes
+        self.consecutive_failures[name] = self.consecutive_failures.get(name, 0) + 1
+        backoff = min(
+            config.AGENT_ERROR_COOLDOWN * (2 ** self.consecutive_failures[name]),
+            config.MAX_ERROR_BACKOFF,
+        )
+        self.agent_cooldowns[name] = time.time() + backoff
+        activity(f"COOLDOWN [{name}] — timeout #{self.consecutive_failures[name]}, retry after {backoff}s")
+
         if name == "eng" and self.current_eng_spec:
-            in_progress = self.current_eng_spec + ".in_progress"
-            if os.path.exists(in_progress):
-                os.rename(in_progress, self.current_eng_spec)
-                activity(f"RE-QUEUED spec after Eng timeout: {os.path.basename(self.current_eng_spec)}")
+            spec_path = self.current_eng_spec
+            self.spec_timeout_counts[spec_path] = self.spec_timeout_counts.get(spec_path, 0) + 1
+            timeouts = self.spec_timeout_counts[spec_path]
+
+            if timeouts >= config.MAX_SPEC_TIMEOUTS:
+                activity(
+                    f"DROPPED spec after {timeouts} timeouts: {os.path.basename(spec_path)}"
+                )
+                in_progress = spec_path + ".in_progress"
+                if os.path.exists(in_progress):
+                    os.remove(in_progress)
+                # Clean up the branch if it exists
+                cwd = self.current_working_dir
+                branch = self.current_eng_branch
+                if cwd and branch and self._git_has_branch(branch, cwd=cwd):
+                    self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
+                    self._git("branch", "-D", branch, cwd=cwd)
+                del self.spec_timeout_counts[spec_path]
+            else:
+                in_progress = spec_path + ".in_progress"
+                if os.path.exists(in_progress):
+                    os.rename(in_progress, spec_path)
+                    activity(f"RE-QUEUED spec after Eng timeout ({timeouts}/{config.MAX_SPEC_TIMEOUTS}): {os.path.basename(spec_path)}")
+
             self.current_eng_branch = None
             self.current_eng_spec = None
             self.current_working_dir = None

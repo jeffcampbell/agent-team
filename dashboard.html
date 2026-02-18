@@ -202,6 +202,8 @@ function renderAgents(agents) {
       details = '<div class="agent-detail">PID ' + info.pid + ' &mdash; ' + fmtDuration(info.running_for_seconds) + '</div>';
     } else if (status === 'cooldown') {
       details = '<div class="agent-detail">Retry in ' + fmtDuration(info.cooldown_remaining_seconds) + '</div>';
+    } else if (info.next_run_seconds != null) {
+      details = '<div class="agent-detail">Next run in ' + fmtDuration(info.next_run_seconds) + '</div>';
     } else {
       details = '<div class="agent-detail">Idle</div>';
     }
