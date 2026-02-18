@@ -160,12 +160,32 @@ def _build_status_payload(supervisor) -> dict:
 
     # ── Activity log tail (filesystem read — read-only) ──
     activity_lines = []
+    all_lines = []
     try:
         with open(config.ACTIVITY_LOG, "r") as f:
-            activity_lines = f.readlines()[-80:]
-            activity_lines = [l.rstrip("\n") for l in activity_lines]
+            all_lines = f.readlines()
+            activity_lines = [l.rstrip("\n") for l in all_lines[-80:]]
     except (OSError, FileNotFoundError):
         pass
+
+    # ── Recently completed (derived from MERGED entries in activity log) ──
+    completed_out = []
+    for raw_line in reversed(all_lines):
+        if len(completed_out) >= 20:
+            break
+        line = raw_line.strip()
+        if "MERGED" not in line or "branch feature/" not in line:
+            continue
+        # Format: [YYYY-MM-DD HH:MM:SS]  MERGED — branch feature/title merged to trunk.
+        try:
+            ts = line[1:20]  # "YYYY-MM-DD HH:MM:SS"
+            branch_start = line.index("branch feature/") + len("branch ")
+            branch_end = line.index(" merged to trunk")
+            branch = line[branch_start:branch_end]
+            title = branch.replace("feature/", "")
+            completed_out.append({"title": title, "merged_at": ts})
+        except (ValueError, IndexError):
+            continue
 
     # ── Config summary ──
     config_out = {
@@ -185,6 +205,7 @@ def _build_status_payload(supervisor) -> dict:
         "agents": agents_out,
         "pipeline": pipeline_out,
         "backlog": backlog_out,
+        "completed": completed_out,
         "stats": stats_out,
         "activity": activity_lines,
         "config": config_out,

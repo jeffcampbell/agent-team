@@ -89,6 +89,9 @@
   }
   .panel h3 { font-size: 0.9rem; color: #888; margin-bottom: 10px; }
 
+  /* Left column stacked panels */
+  .left-stack { display: flex; flex-direction: column; gap: 16px; }
+
   /* Backlog */
   .backlog-item {
     padding: 6px 0; border-bottom: 1px solid #0f3460;
@@ -100,6 +103,15 @@
   .priority-high   { color: #e94560; }
   .priority-medium { color: #f0a500; }
   .priority-low    { color: #4ecca3; }
+
+  /* Completed */
+  .completed-item {
+    padding: 6px 0; border-bottom: 1px solid #0f3460;
+    font-size: 0.8rem;
+  }
+  .completed-item:last-child { border-bottom: none; }
+  .completed-title { color: #4ecca3; font-weight: 600; }
+  .completed-meta { color: #666; font-size: 0.72rem; }
 
   /* Activity feed */
   .activity-feed {
@@ -154,9 +166,15 @@
 <div class="stats-bar" id="statsBar"></div>
 
 <div class="bottom-grid">
-  <div class="panel" id="backlogPanel">
-    <h3>Backlog (<span id="backlogCount">0</span>)</h3>
-    <div id="backlogList"></div>
+  <div class="left-stack">
+    <div class="panel" id="backlogPanel">
+      <h3>Backlog (<span id="backlogCount">0</span>)</h3>
+      <div id="backlogList"></div>
+    </div>
+    <div class="panel" id="completedPanel">
+      <h3>Recently Completed (<span id="completedCount">0</span>)</h3>
+      <div id="completedList"></div>
+    </div>
   </div>
   <div class="panel" id="activityPanel">
     <h3>Activity</h3>
@@ -268,6 +286,20 @@ function renderBacklog(backlog) {
   }).join('');
 }
 
+function renderCompleted(completed) {
+  document.getElementById('completedCount').textContent = completed.length;
+  const list = document.getElementById('completedList');
+  if (!completed || completed.length === 0) {
+    list.innerHTML = '<div style="color:#555;font-size:0.8rem">No completed work yet</div>';
+    return;
+  }
+  list.innerHTML = completed.map(function(c) {
+    return '<div class="completed-item">' +
+      '<div class="completed-title">' + (c.title || '(untitled)') + '</div>' +
+      '<div class="completed-meta">' + (c.merged_at || '') + '</div></div>';
+  }).join('');
+}
+
 function classifyLine(line) {
   const l = line.toLowerCase();
   if (l.includes('start ') || l.includes('start\t')) return 'line-start';
@@ -314,6 +346,7 @@ function refresh() {
       renderPipeline(data.pipeline || {});
       renderStats(data.stats || {});
       renderBacklog(data.backlog || {});
+      renderCompleted(data.completed || []);
       renderActivity(data.activity || []);
       renderConfig(data.config || {});
     })
