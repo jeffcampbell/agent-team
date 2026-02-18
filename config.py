@@ -234,6 +234,10 @@ Working directory: {base_dir}
 {git_log}
 
 Instructions:
+0. FIRST, write a plain-English summary of the last hour's activity to stdout.
+   Format it as a short digest — what happened, which agents ran, what was the outcome.
+   Keep it to 3-6 lines. This summary gets logged for the human operator.
+
 1. Analyze the activity log for patterns:
    - Recurring failures or error cooldowns
    - Noisy or unhelpful log output

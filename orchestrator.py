@@ -835,13 +835,30 @@ class Supervisor:
         self.current_eng_spec = None
         self.current_working_dir = None
 
+    def _log_meta_summary(self, output: str):
+        """Extract and log the meta agent's activity summary with visual breakers."""
+        if not output or not output.strip():
+            return
+        # Use the full output as the summary — meta is instructed to lead with it
+        lines = output.strip().splitlines()
+        # Cap at 15 lines to keep the log readable
+        summary_lines = lines[:15]
+        activity("*" * 60)
+        activity("META SUMMARY — last hour")
+        for line in summary_lines:
+            activity(f"  {line}")
+        activity("*" * 60)
+
     def _phase_meta(self):
         """Periodically analyze orchestrator activity and implement small improvements."""
+        meta_agent = self.active_agents.get("meta")
         if self._is_agent_active("meta"):
             return
 
-        # If meta just completed, check for new commits → restart
+        # If meta just completed, log summary and check for new commits → restart
         if self._meta_head_before is not None:
+            if meta_agent is not None:
+                self._log_meta_summary(meta_agent.get_output())
             current_head = self._git_last_commit(cwd=config.BASE_DIR)
             if current_head != self._meta_head_before:
                 self._meta_head_before = None
