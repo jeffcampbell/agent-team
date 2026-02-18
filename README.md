@@ -134,7 +134,7 @@ If your `AGENT_TEAM_SERVICE_RESTART_CMD` uses `sudo`, ensure the service user ha
 
 ```bash
 # /etc/sudoers.d/agent-team
-pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart your-app.service
+<your-user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart your-app.service
 ```
 
 ### 5. Monitor
