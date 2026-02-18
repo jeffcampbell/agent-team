@@ -15,7 +15,7 @@ DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "quote-bot")
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
 TICK_INTERVAL = 10  # seconds between orchestration ticks
-AGENT_TIMEOUT_SECONDS = 600  # max runtime per agent subprocess (10 minutes)
+AGENT_TIMEOUT_SECONDS = 900  # max runtime per agent subprocess (15 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
