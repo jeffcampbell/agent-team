@@ -10,7 +10,7 @@ REVIEW_DIR = os.path.join(BASE_DIR, "agents", "review")
 LOGS_DIR = os.path.join(BASE_DIR, "agents", "logs")
 ACTIVITY_LOG = os.path.join(BASE_DIR, "agents", "activity.log")
 DEVELOPMENT_DIR = os.environ.get("AGENT_TEAM_DEV_DIR", os.path.expanduser("~/Development"))
-DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "quote-bot")
+DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "my-app")
 
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
