@@ -168,6 +168,23 @@ class StationManager:
 
     # ─── Helpers ─────────────────────────────────────────────────────────
 
+    def _feedback_path(self, branch: str) -> str:
+        """Return the path to an inspector feedback file for the given branch.
+
+        Tries the canonical name first, then falls back to any *_feedback.md
+        in the review dir (only one branch is in review at a time).
+        """
+        canonical = os.path.join(
+            config.REVIEW_DIR,
+            f"{branch.replace('/', '_')}_feedback.md",
+        )
+        if os.path.exists(canonical):
+            return canonical
+        matches = glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md"))
+        if len(matches) == 1:
+            return matches[0]
+        return canonical  # fall back to canonical (may not exist)
+
     def _recover_orphaned_specs(self):
         """On startup, rename any .in_progress specs back to .json so they re-enter the pipeline."""
         pattern = os.path.join(config.BACKLOG_DIR, "*.json.in_progress")
@@ -297,12 +314,9 @@ class StationManager:
                     self._git("branch", "-D", branch, cwd=cwd)
                 # Delete any stale inspector feedback for this branch
                 if branch:
-                    feedback_path = os.path.join(
-                        config.REVIEW_DIR,
-                        f"{branch.replace('/', '_')}_feedback.md",
-                    )
-                    if os.path.exists(feedback_path):
-                        os.remove(feedback_path)
+                    fb = self._feedback_path(branch)
+                    if os.path.exists(fb):
+                        os.remove(fb)
                 del self.spec_timeout_counts[spec_path]
             else:
                 in_progress = spec_path + ".in_progress"
@@ -578,12 +592,9 @@ class StationManager:
         self.active_agents["conductor"] = None
 
         # Delete any stale inspector feedback for this branch
-        feedback_path = os.path.join(
-            config.REVIEW_DIR,
-            f"{branch.replace('/', '_')}_feedback.md",
-        )
-        if os.path.exists(feedback_path):
-            os.remove(feedback_path)
+        fb = self._feedback_path(branch)
+        if os.path.exists(fb):
+            os.remove(fb)
 
         # Reset branch
         self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
@@ -764,7 +775,7 @@ class StationManager:
         feedback_path = os.path.join(
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
-        )
+        )  # canonical path passed to Inspector prompt
         activity(f"Inspector — reviewing branch {branch} in {cwd}")
         prompt = config.INSPECTOR_PROMPT.format(
             branch_name=branch,
@@ -786,10 +797,7 @@ class StationManager:
         if not branch or not spec_path:
             return
 
-        feedback_path = os.path.join(
-            config.REVIEW_DIR,
-            f"{branch.replace('/', '_')}_feedback.md",
-        )
+        feedback_path = self._feedback_path(branch)
         if not os.path.exists(feedback_path):
             return
 
@@ -920,12 +928,9 @@ class StationManager:
             activity(f"RE-ROUTED spec: {os.path.basename(self.current_conductor_spec)}")
 
         # Delete any stale inspector feedback for this branch
-        feedback_path = os.path.join(
-            config.REVIEW_DIR,
-            f"{branch.replace('/', '_')}_feedback.md",
-        )
-        if os.path.exists(feedback_path):
-            os.remove(feedback_path)
+        fb = self._feedback_path(branch)
+        if os.path.exists(fb):
+            os.remove(fb)
 
         self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
         self._git("branch", "-D", branch, cwd=cwd)
@@ -981,10 +986,7 @@ class StationManager:
             return
 
         cwd = self.current_working_dir
-        feedback_path = os.path.join(
-            config.REVIEW_DIR,
-            f"{self.current_conductor_branch.replace('/', '_')}_feedback.md",
-        )
+        feedback_path = self._feedback_path(self.current_conductor_branch)
         if not os.path.exists(feedback_path):
             return
 
