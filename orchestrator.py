@@ -852,6 +852,20 @@ class StationManager:
                 self._dispatcher_skip_logged_trains = key
             return
 
+        # Use the shortest dispatcher interval among idle train types
+        now = time.time()
+        idle_types = set(t.train_type for t in self.trains if not t.branch)
+        if idle_types:
+            min_interval = min(
+                config.TRAIN_CONFIG[tt]["dispatcher_interval"]
+                for tt in idle_types
+            )
+        else:
+            min_interval = config.AGENT_MIN_INTERVALS.get("dispatcher", 900)
+        last_launch = self.last_launch_times.get("dispatcher", 0)
+        if now - last_launch < min_interval:
+            return
+
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
         prompt = config.DISPATCHER_PROMPT.format(

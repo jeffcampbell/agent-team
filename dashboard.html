@@ -626,9 +626,9 @@ function renderAgents(agents, trains) {
           (is === 'running' && t.inspector ? ' ' + fmtDuration(t.inspector.running_for_seconds) : ''));
 
         detailHtml +=
-          '<div class="train-detail-row" style="display:flex;justify-content:space-between;align-items:center">' +
-            '<span class="train-detail-id">' + parts.join(' ') + '</span>' +
-            '<span style="white-space:nowrap">' + statusParts.join(' &nbsp;') + '</span>' +
+          '<div class="train-detail-row">' +
+            '<div class="train-detail-id">' + parts.join(' ') + '</div>' +
+            '<div style="margin-top:2px">' + statusParts.join(' &nbsp;') + '</div>' +
           '</div>';
       });
       detailHtml += '</div>';

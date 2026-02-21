@@ -90,12 +90,14 @@ TRAIN_CONFIG = {
         "conductor_model": "claude-sonnet-4-5-20250929",
         "inspector_model": "claude-haiku-4-5-20251001",
         "complexity": "high",
+        "dispatcher_interval": 900,   # 15 min — Sonnet work is expensive
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
         "conductor_model": "claude-haiku-4-5-20251001",
         "inspector_model": "claude-haiku-4-5-20251001",
         "complexity": "low",
+        "dispatcher_interval": 300,   # 5 min — Haiku work is cheap
     },
 }
 
