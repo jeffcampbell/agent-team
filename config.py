@@ -56,6 +56,13 @@ CLAUDE_CMD_TEMPLATE = [
 
 SERVICE_RESTART_CMD = os.environ.get("AGENT_TEAM_SERVICE_RESTART_CMD", "")
 
+# ─── Railway deployment (alternative to SERVICE_RESTART_CMD) ──────────────────
+RAILWAY_PROJECT = os.environ.get("AGENT_TEAM_RAILWAY_PROJECT", "")
+RAILWAY_SERVICE = os.environ.get("AGENT_TEAM_RAILWAY_SERVICE", "")
+RAILWAY_STAGING_ENV = os.environ.get("AGENT_TEAM_RAILWAY_STAGING_ENV", "staging")
+RAILWAY_PRODUCTION_ENV = os.environ.get("AGENT_TEAM_RAILWAY_PRODUCTION_ENV", "production")
+RAILWAY_LOG_TIMEOUT = 8  # seconds to capture streaming railway logs
+
 # ─── Git ─────────────────────────────────────────────────────────────────────
 
 TRUNK_BRANCH = "main"  # default branch for target projects
@@ -75,6 +82,22 @@ SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator it
 
 # ─── Dashboard (optional) ────────────────────────────────────────────────
 DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
+
+# ─── Train configuration ───────────────────────────────────────────────────
+TRAIN_CONFIG = {
+    "regular": {
+        "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "1")),
+        "conductor_model": "claude-sonnet-4-5-20250929",
+        "inspector_model": "claude-haiku-4-5-20251001",
+        "complexity": "high",
+    },
+    "express": {
+        "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
+        "conductor_model": "claude-haiku-4-5-20251001",
+        "inspector_model": "claude-haiku-4-5-20251001",
+        "complexity": "low",
+    },
+}
 
 # ─── Agent system prompts ────────────────────────────────────────────────────
 
@@ -107,9 +130,14 @@ Instructions:
      "title": "short-kebab-title",
      "description": "Detailed description of what to build, acceptance criteria, and any constraints.",
      "priority": "high" | "medium" | "low",
+     "complexity": "high" | "low",
      "created_by": "dispatcher",
      "working_dir": "{working_dir}"
    }}
+
+   Complexity guidelines:
+   - "low": Documentation changes, bug fixes with clear error messages, config changes, small features (<100 lines diff, 1-2 files)
+   - "high": Multi-file features, architectural changes, new subsystems (>100 lines or 3+ files)
 4. Name the file: {timestamp}_{{title}}.json
 5. Only create ONE spec per invocation. Be specific and actionable.
 """
