@@ -1099,7 +1099,8 @@ class StationManager:
             return
 
         log_lines = self._read_new_log_lines(project_dir)
-        if not log_lines:
+        # Skip if empty or too few new lines to warrant analysis
+        if not log_lines or len(log_lines.splitlines()) < 10:
             return
 
         # Layer 2: pass existing bug titles into prompt for LLM dedup
