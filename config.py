@@ -10,7 +10,7 @@ REVIEW_DIR = os.path.join(BASE_DIR, "agents", "review")
 LOGS_DIR = os.path.join(BASE_DIR, "agents", "logs")
 ACTIVITY_LOG = os.path.join(BASE_DIR, "agents", "activity.log")
 DEVELOPMENT_DIR = os.environ.get("AGENT_TEAM_DEV_DIR", os.path.expanduser("~/Development"))
-DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "my-app")
+DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "incident-horoscope")
 
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
@@ -57,8 +57,8 @@ CLAUDE_CMD_TEMPLATE = [
 SERVICE_RESTART_CMD = os.environ.get("AGENT_TEAM_SERVICE_RESTART_CMD", "")
 
 # ─── Railway deployment (alternative to SERVICE_RESTART_CMD) ──────────────────
-RAILWAY_PROJECT = os.environ.get("AGENT_TEAM_RAILWAY_PROJECT", "")
-RAILWAY_SERVICE = os.environ.get("AGENT_TEAM_RAILWAY_SERVICE", "")
+RAILWAY_PROJECT = os.environ.get("AGENT_TEAM_RAILWAY_PROJECT", "incident-horoscope")
+RAILWAY_SERVICE = os.environ.get("AGENT_TEAM_RAILWAY_SERVICE", "striking-surprise")
 RAILWAY_STAGING_ENV = os.environ.get("AGENT_TEAM_RAILWAY_STAGING_ENV", "staging")
 RAILWAY_PRODUCTION_ENV = os.environ.get("AGENT_TEAM_RAILWAY_PRODUCTION_ENV", "production")
 RAILWAY_LOG_TIMEOUT = 8  # seconds to capture streaming railway logs
@@ -67,7 +67,7 @@ RAILWAY_LOG_TIMEOUT = 8  # seconds to capture streaming railway logs
 
 TRUNK_BRANCH = "main"  # default branch for target projects
 APP_LOG_GLOB = os.environ.get("AGENT_TEAM_APP_LOG_GLOB", "")  # e.g. "logs/*.log" or "app.log"
-MAX_ENG_EDITS_BEFORE_RESET = 3
+MAX_ENG_EDITS_BEFORE_RESET = 5
 MAX_REWORK_ATTEMPTS = 3
 
 # ─── Guardrails ──────────────────────────────────────────────────────────────
