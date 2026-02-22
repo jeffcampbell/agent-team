@@ -128,6 +128,7 @@ class Train:
         self.spec_path: str | None = None
         self.branch: str | None = None
         self.working_dir: str | None = None
+        self.repo_dir: str | None = None  # original project repo (working_dir points to worktree)
         self.file_edits: dict[str, int] = {}
         self.edits_tallied: bool = False
         self.rework_count: int = 0
@@ -148,6 +149,7 @@ class Train:
         self.spec_path = None
         self.branch = None
         self.working_dir = None
+        self.repo_dir = None
         self.file_edits.clear()
         self.edits_tallied = False
         self.rework_count = 0
@@ -405,6 +407,53 @@ class StationManager:
             cwd=cwd or config.BASE_DIR,
         )
         return result.stdout.strip()
+
+    def _create_worktree(self, repo_dir: str, branch: str, train_id: str) -> str:
+        """Create a git worktree for the given branch and return its path.
+
+        Creates a new branch from HEAD if it doesn't exist, or checks out
+        an existing branch. Adds .worktrees/ to the project's .gitignore.
+        """
+        worktree_base = os.path.join(repo_dir, ".worktrees")
+        os.makedirs(worktree_base, exist_ok=True)
+        worktree_path = os.path.join(worktree_base, train_id)
+
+        # Ensure .worktrees/ is in the project's .gitignore
+        gitignore_path = os.path.join(repo_dir, ".gitignore")
+        ignore_entry = ".worktrees/"
+        needs_add = True
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path) as f:
+                for line in f:
+                    if line.strip() == ignore_entry:
+                        needs_add = False
+                        break
+        if needs_add:
+            with open(gitignore_path, "a") as f:
+                f.write(f"\n{ignore_entry}\n")
+
+        # Clean up stale worktree at this path if it exists
+        if os.path.isdir(worktree_path):
+            self._git("worktree", "remove", "--force", worktree_path, cwd=repo_dir)
+
+        # Create worktree: new branch if it doesn't exist, existing branch if it does
+        if self._git_has_branch(branch, cwd=repo_dir):
+            self._git("worktree", "add", worktree_path, branch, cwd=repo_dir)
+        else:
+            self._git("worktree", "add", "-b", branch, worktree_path, cwd=repo_dir)
+
+        activity(f"WORKTREE created: {worktree_path} (branch={branch})")
+        return worktree_path
+
+    def _remove_worktree(self, repo_dir: str | None, worktree_path: str | None):
+        """Remove a git worktree. Safe to call even if already removed."""
+        if not repo_dir or not worktree_path:
+            return
+        if os.path.isdir(worktree_path):
+            self._git("worktree", "remove", "--force", worktree_path, cwd=repo_dir)
+            activity(f"WORKTREE removed: {worktree_path}")
+        # Prune any stale worktree references
+        self._git("worktree", "prune", cwd=repo_dir)
 
     def _git_has_branch(self, branch: str, cwd: str | None = None) -> bool:
         result = self._git("branch", "--list", branch, cwd=cwd)
@@ -713,11 +762,11 @@ class StationManager:
                 in_progress = train.spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
-                cwd = train.working_dir
+                repo = train.repo_dir
                 branch = train.branch
-                if cwd and branch and self._git_has_branch(branch, cwd=cwd):
-                    self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-                    self._git("branch", "-D", branch, cwd=cwd)
+                self._remove_worktree(train.repo_dir, train.working_dir)
+                if repo and branch and self._git_has_branch(branch, cwd=repo):
+                    self._git("branch", "-D", branch, cwd=repo)
                 if branch:
                     fb = self._feedback_path(branch)
                     if os.path.exists(fb):
@@ -729,9 +778,11 @@ class StationManager:
                     original = train.spec_path
                     os.rename(in_progress, original)
                     activity(f"RE-ROUTED spec after Conductor overdue ({train.spec_timeout_count}/{config.MAX_SPEC_TIMEOUTS}): {os.path.basename(original)}")
+                self._remove_worktree(train.repo_dir, train.working_dir)
                 train.branch = None
                 train.spec_path = None
                 train.working_dir = None
+                train.repo_dir = None
                 train.file_edits.clear()
 
     def _find_spec_for_train(self, train: Train) -> str | None:
@@ -740,35 +791,19 @@ class StationManager:
         Regular trains try high first, then fall back to low.
         Express trains only pick low complexity specs.
         """
-        # Check for specs already claimed by another train (collision guard)
-        busy_dirs = set()
-        for other in self.trains:
-            if other.train_id != train.train_id and other.working_dir:
-                busy_dirs.add(os.path.realpath(other.working_dir))
-
-        def _first_available(specs: list[str]) -> str | None:
-            for spec_path in specs:
-                try:
-                    with open(spec_path) as f:
-                        data = json.load(f)
-                    wd = data.get("working_dir", "")
-                    if wd and os.path.realpath(wd) in busy_dirs:
-                        continue
-                    return spec_path
-                except (json.JSONDecodeError, OSError):
-                    continue
-            return None
+        # With worktrees, multiple trains can work on the same project.
+        # Collision is prevented by spec rename to .in_progress on pickup.
 
         # Primary complexity
         primary = self._backlog_specs(complexity=train.complexity)
-        result = _first_available(primary)
-        if result:
-            return result
+        if primary:
+            return primary[0]
 
         # Fallback: regular trains can pick low specs; express never picks high
         if train.train_type == "regular":
             fallback = self._backlog_specs(complexity="low")
-            return _first_available(fallback)
+            if fallback:
+                return fallback[0]
 
         return None
 
@@ -812,9 +847,11 @@ class StationManager:
         if os.path.exists(fb):
             os.remove(fb)
 
-        # Reset branch
-        self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-        self._git("branch", "-D", branch, cwd=cwd)
+        # Remove worktree and delete branch from main repo
+        self._remove_worktree(train.repo_dir, train.working_dir)
+        repo = train.repo_dir or cwd
+        if self._git_has_branch(branch, cwd=repo):
+            self._git("branch", "-D", branch, cwd=repo)
 
         # Re-queue spec
         if train.spec_path:
@@ -941,27 +978,34 @@ class StationManager:
         train.file_edits.clear()
         train.spec_path = spec_path
         train.branch = branch_name
-        train.working_dir = working_dir
+        train.repo_dir = working_dir  # original project repo
         train.rework_count = 0
         train.spec_timeout_count = 0
 
         # If the feature branch already exists with changes, skip Conductor → inspector
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
             activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
+            worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+            train.working_dir = worktree_path
             os.rename(spec_path, spec_path + ".in_progress")
             return
 
+        # Create worktree with the feature branch
+        worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+        train.working_dir = worktree_path
+
         spec_desc = spec_data.get("description", "")
-        activity(f"Conductor:{train.train_id} — starting spec '{spec_title}' in {working_dir}")
+        activity(f"Conductor:{train.train_id} — starting spec '{spec_title}' in {worktree_path}")
         spec_summary = spec_desc.split("\n")[0][:120].strip()
         activity(f"  SPEC: {spec_summary}")
         prompt = config.CONDUCTOR_PROMPT.format(
             spec_json=json.dumps(spec_data, indent=2),
             spec_title=spec_title,
-            working_dir=working_dir,
+            working_dir=worktree_path,
         )
-        agent = self._launch_train_agent(train, "conductor", prompt, cwd=working_dir)
+        agent = self._launch_train_agent(train, "conductor", prompt, cwd=worktree_path)
         if agent is None:
+            self._remove_worktree(train.repo_dir, worktree_path)
             train.reset_pipeline()
             return
         train.edits_tallied = False
@@ -986,8 +1030,10 @@ class StationManager:
         diff = self._git_diff_trunk(branch, cwd=cwd)
         if not diff:
             activity(f"Inspector:{train.train_id} — no diff on branch {branch}, cleaning up empty branch")
-            self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-            self._git("branch", "-D", branch, cwd=cwd)
+            repo = train.repo_dir or cwd
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if self._git_has_branch(branch, cwd=repo):
+                self._git("branch", "-D", branch, cwd=repo)
             if train.spec_path:
                 in_progress = train.spec_path + ".in_progress"
                 if os.path.exists(in_progress):
@@ -1040,8 +1086,10 @@ class StationManager:
         train.rework_count += 1
         if train.rework_count > config.MAX_REWORK_ATTEMPTS:
             activity(f"CANCELLED [{train.train_id}] spec after {config.MAX_REWORK_ATTEMPTS} rework attempts — branch {branch}")
-            self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-            self._git("branch", "-D", branch, cwd=cwd)
+            repo = train.repo_dir or cwd
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if self._git_has_branch(branch, cwd=repo):
+                self._git("branch", "-D", branch, cwd=repo)
             in_progress = spec_path + ".in_progress"
             if os.path.exists(in_progress):
                 os.remove(in_progress)
@@ -1080,11 +1128,11 @@ class StationManager:
             return
 
         # Check current working projects, or default to configured project
-        # Use the first train's working dir if any are active, else default
+        # Use the first train's repo_dir (the real project, not the worktree)
         project_dir = None
         for train in self.trains:
-            if train.working_dir:
-                project_dir = train.working_dir
+            if train.repo_dir:
+                project_dir = train.repo_dir
                 break
         if not project_dir:
             project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
@@ -1149,7 +1197,7 @@ class StationManager:
         if os.path.exists(feedback_path):
             try:
                 with open(feedback_path) as f:
-                    if f.readline().strip() == "MERGED":
+                    if f.readline().strip() == "APPROVED":
                         return
             except OSError:
                 pass
@@ -1168,8 +1216,10 @@ class StationManager:
         if os.path.exists(fb):
             os.remove(fb)
 
-        self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-        self._git("branch", "-D", branch, cwd=cwd)
+        repo = train.repo_dir or cwd
+        self._remove_worktree(train.repo_dir, train.working_dir)
+        if self._git_has_branch(branch, cwd=repo):
+            self._git("branch", "-D", branch, cwd=repo)
 
         train.reset_pipeline()
 
@@ -1211,13 +1261,12 @@ class StationManager:
         activity("RAILWAY production deploy triggered")
 
     def _train_phase_service_recovery(self, train: Train):
-        """If Inspector merged to trunk on this train, restart the service."""
+        """If Inspector approved on this train, merge in main repo and restart the service."""
         if train.inspector is not None:
             return
         if not train.branch:
             return
 
-        cwd = train.working_dir
         feedback_path = self._feedback_path(train.branch)
         if not os.path.exists(feedback_path):
             return
@@ -1228,23 +1277,26 @@ class StationManager:
         except OSError:
             return
 
-        if first_line != "MERGED":
+        if first_line != "APPROVED":
             return
 
-        current_head = self._git_last_commit(cwd=cwd)
-        if current_head == self.last_merge_commit:
-            return
+        repo_dir = train.repo_dir or train.working_dir
+        activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
 
-        activity(f"TERMINUS [{train.train_id}] — branch {train.branch} merged to trunk.")
+        # Merge in the main repo (not the worktree — main is checked out there)
+        merge_result = self._git("merge", "--no-ff", train.branch, cwd=repo_dir)
+        activity(f"MERGE [{train.train_id}] — {merge_result or 'ok'}")
+
+        current_head = self._git_last_commit(cwd=repo_dir)
         self.last_merge_commit = current_head
 
-        # Delete the feature branch now that it's merged
-        if self._git_has_branch(train.branch, cwd=cwd):
-            self._git("checkout", config.TRUNK_BRANCH, cwd=cwd)
-            self._git("branch", "-D", train.branch, cwd=cwd)
+        # Remove the worktree, then delete the feature branch from the main repo
+        self._remove_worktree(train.repo_dir, train.working_dir)
+        if self._git_has_branch(train.branch, cwd=repo_dir):
+            self._git("branch", "-D", train.branch, cwd=repo_dir)
 
         if config.RAILWAY_PROJECT:
-            self._deploy_to_railway(cwd=cwd)
+            self._deploy_to_railway(cwd=repo_dir)
         elif config.SERVICE_RESTART_CMD:
             rc = os.system(config.SERVICE_RESTART_CMD)
             if rc == 0:

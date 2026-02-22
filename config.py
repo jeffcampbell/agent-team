@@ -155,7 +155,8 @@ Instructions:
 {spec_json}
 
 2. cd into {working_dir} first.
-3. Create a feature branch: git checkout -b feature/{spec_title}
+3. You are already on the correct feature branch. Confirm with `git branch --show-current`.
+   Do NOT create a new branch or switch branches.
 4. Implement the feature described in the spec.
 5. Commit your changes with clear commit messages.
 6. Do NOT merge — leave the branch for review.
@@ -186,7 +187,7 @@ Instructions:
 """
 
 INSPECTOR_PROMPT = """\
-You are the Inspector agent. Your job is to review code changes and merge or request fixes.
+You are the Inspector agent. Your job is to review code changes and approve or request fixes.
 
 The project is located at: {working_dir}
 The review feedback directory is: {review_dir}
@@ -199,8 +200,8 @@ Instructions:
 
 4. Evaluate the code for correctness, style, and completeness.
 5. If the code is acceptable:
-   - Run: git checkout main && git merge --no-ff {branch_name}
-   - Write "MERGED" as the first line of your feedback file.
+   - Do NOT merge. The orchestrator will handle merging.
+   - Write "APPROVED" as the first line of your feedback file.
 6. If the code needs changes:
    - Do NOT merge.
    - Write "CHANGES_REQUESTED" as the first line of your feedback file.
