@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -199,6 +200,7 @@ class StationManager:
         # Signal high-water mark: only analyze new log lines since last run
         self.sre_log_offsets: dict[str, int] = {}  # project_dir → byte offset in app.log
         self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
+        self.last_merge_time: float = 0.0  # timestamp of last merge (to skip Signal during deployment)
 
         # Ops agent: track HEAD before ops launch to detect new commits
         self._ops_head_before: str | None = None
@@ -233,11 +235,49 @@ class StationManager:
         return canonical  # fall back to canonical (may not exist)
 
     def _recover_orphaned_specs(self):
-        """On startup, rename any .in_progress specs back to .json so they re-enter the pipeline."""
+        """On startup, rename any .in_progress specs back to .json so they re-enter the pipeline.
+
+        Also cleans up stale worktrees and feedback files left from the
+        previous run, so the conductor can start fresh without hitting
+        worktree-already-checked-out errors.
+        """
         pattern = os.path.join(config.BACKLOG_DIR, "*.json.in_progress")
         orphaned = glob.glob(pattern)
         for path in orphaned:
             original = path.removesuffix(".in_progress")
+            # Read spec to derive branch name and working_dir for cleanup
+            try:
+                with open(path) as f:
+                    spec_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                spec_data = {}
+
+            working_dir = spec_data.get("working_dir")
+            if not working_dir:
+                working_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+            title = spec_data.get("title", "")
+
+            # Clean up stale worktrees for all trains in this project
+            if os.path.isdir(working_dir):
+                worktree_base = os.path.join(working_dir, ".worktrees")
+                if os.path.isdir(worktree_base):
+                    for entry in os.listdir(worktree_base):
+                        wt_path = os.path.join(worktree_base, entry)
+                        if os.path.isdir(wt_path):
+                            self._git("worktree", "remove", "--force", wt_path, cwd=working_dir)
+                            # If git failed silently, force-remove the directory
+                            if os.path.isdir(wt_path):
+                                shutil.rmtree(wt_path, ignore_errors=True)
+                            activity(f"CLEANUP stale worktree: {wt_path}")
+
+            # Clean up stale feedback file for this branch
+            if title:
+                branch_name = f"feature/{title}"
+                feedback_path = self._feedback_path(branch_name)
+                if os.path.exists(feedback_path):
+                    os.remove(feedback_path)
+                    activity(f"CLEANUP stale feedback: {os.path.basename(feedback_path)}")
+
             os.rename(path, original)
             activity(f"RECOVERED orphaned spec: {os.path.basename(original)}")
 
@@ -441,6 +481,12 @@ class StationManager:
             self._git("worktree", "add", worktree_path, branch, cwd=repo_dir)
         else:
             self._git("worktree", "add", "-b", branch, worktree_path, cwd=repo_dir)
+
+        if not os.path.isdir(worktree_path):
+            raise RuntimeError(
+                f"Failed to create worktree at {worktree_path} for branch {branch}. "
+                f"The branch may already be checked out in another worktree."
+            )
 
         activity(f"WORKTREE created: {worktree_path} (branch={branch})")
         return worktree_path
@@ -974,7 +1020,10 @@ class StationManager:
             return
 
         spec_title = spec_data.get("title", "untitled")
-        branch_name = f"feature/{spec_title}"
+        # Sanitize title into a valid git branch name
+        safe_title = re.sub(r'[^a-zA-Z0-9_/-]', '-', spec_title).strip('-')
+        safe_title = re.sub(r'-{2,}', '-', safe_title)
+        branch_name = f"feature/{safe_title}"
         train.file_edits.clear()
         train.spec_path = spec_path
         train.branch = branch_name
@@ -985,13 +1034,23 @@ class StationManager:
         # If the feature branch already exists with changes, skip Conductor → inspector
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
             activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
-            worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+            try:
+                worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+            except RuntimeError as e:
+                activity(f"RESTRICTED [{train.train_id}] — worktree creation failed: {e}")
+                train.reset_pipeline()
+                return
             train.working_dir = worktree_path
             os.rename(spec_path, spec_path + ".in_progress")
             return
 
         # Create worktree with the feature branch
-        worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+        try:
+            worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+        except RuntimeError as e:
+            activity(f"RESTRICTED [{train.train_id}] — worktree creation failed: {e}")
+            train.reset_pipeline()
+            return
         train.working_dir = worktree_path
 
         spec_desc = spec_data.get("description", "")
@@ -1023,6 +1082,10 @@ class StationManager:
         branch = train.branch
         cwd = train.working_dir
         if not branch or not cwd:
+            return
+        # Don't relaunch if feedback already exists — let service_recovery/rework handle it
+        feedback_path = self._feedback_path(branch)
+        if os.path.exists(feedback_path):
             return
         if not self._git_has_branch(branch, cwd=cwd):
             return
@@ -1125,6 +1188,10 @@ class StationManager:
     def _phase_signal(self):
         """If a log file exists in the current project, launch Signal to analyze."""
         if self._is_agent_active("signal"):
+            return
+
+        # Skip Signal for 2 minutes after a merge to let deployment propagate
+        if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
 
         # Check current working projects, or default to configured project
@@ -1289,6 +1356,7 @@ class StationManager:
 
         current_head = self._git_last_commit(cwd=repo_dir)
         self.last_merge_commit = current_head
+        self.last_merge_time = time.time()
 
         # Remove the worktree, then delete the feature branch from the main repo
         self._remove_worktree(train.repo_dir, train.working_dir)
