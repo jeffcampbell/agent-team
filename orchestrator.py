@@ -1293,9 +1293,25 @@ class StationManager:
         if len(open_bugs) >= config.MAX_SRE_OPEN_BUGS:
             return
 
+        # Compute summary slug early so we can use it for cross-checks
+        summary = re.sub(r'[^a-z0-9]+', '_', matching[0][:40].lower()).strip('_')
+
+        # Cross-check: skip if a backlog spec or active train branch already covers this
+        # issue. Match on keywords longer than 4 chars to avoid generic words like "error".
+        kw_parts = [w for w in summary.split('_') if len(w) > 4]
+        if kw_parts:
+            try:
+                for fname in os.listdir(config.BACKLOG_DIR):
+                    if any(w in fname for w in kw_parts):
+                        return
+            except OSError:
+                pass
+            for train in self.trains:
+                if train.branch and any(w in train.branch for w in kw_parts):
+                    return
+
         # File spec immediately (no LLM)
         ts = time.strftime("%Y%m%d_%H%M%S")
-        summary = re.sub(r'[^a-z0-9]+', '_', matching[0][:40].lower()).strip('_')
         spec = {
             "title": f"log-alert-{summary}",
             "description": (

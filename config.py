@@ -177,10 +177,18 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
 3. You are already on the correct feature branch. Confirm with `git branch --show-current`.
    The branch name should be: {branch_name}
    If it is not, STOP and report the mismatch — do NOT run git checkout to fix it.
-4. Implement the feature described in the spec.
-5. Commit your changes with clear commit messages.
-6. Do NOT merge — leave the branch for the Inspector to review.
-7. When done, write a brief summary of what you changed to stdout.
+4. Before writing any code, run `git log --oneline -8 {repo_dir}` to see what recently
+   merged into main. Do NOT duplicate work that already landed, and do NOT undo or remove
+   code that was intentionally added by a recent commit.
+5. Implement the feature described in the spec.
+6. Before committing, do an error-handling pass: for every value returned by a service,
+   database, or API call, confirm errors and edge cases (nulls, undefined, empty results)
+   are handled before use. Unhandled error paths cause silent runtime failures.
+7. If your changes delete files, remove routes, or remove service wiring: verify the
+   project still builds/starts before committing.
+8. Commit your changes with clear commit messages.
+9. Do NOT merge — leave the branch for the Inspector to review.
+10. When done, write a brief summary of what you changed to stdout.
 """
 
 CONDUCTOR_REWORK_PROMPT = """\
@@ -204,14 +212,20 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
 3. You are on branch: {branch_name}
    Do NOT create a new branch. Stay on this branch.
    Do NOT run git checkout under any circumstances.
-4. The inspector requested changes. Here is their feedback:
+4. Before touching any code, run `git log --oneline -8 {repo_dir}` to see what recently
+   merged into main while you were away. Your worktree may be behind. Do NOT undo or
+   duplicate changes that already landed on main.
+5. The inspector requested changes. Here is their feedback:
 
 {reviewer_feedback}
 
-5. Address each issue raised by the inspector.
-6. Commit your fixes with clear commit messages referencing the feedback.
-7. Do NOT merge — leave the branch for re-review.
-8. When done, write a brief summary of what you fixed to stdout.
+6. Address each issue raised by the inspector.
+7. After making fixes, do an error-handling pass on any code you touched: confirm all
+   values returned from service, database, or API calls have errors and edge cases handled.
+8. If you removed any code, verify the project still builds/starts before committing.
+9. Commit your fixes with clear commit messages referencing the feedback.
+10. Do NOT merge — leave the branch for re-review.
+11. When done, write a brief summary of what you fixed to stdout.
 """
 
 INSPECTOR_PROMPT = """\
@@ -226,14 +240,29 @@ Instructions:
 3. Here is the diff against main:
 {diff}
 
-4. Evaluate the code for correctness, style, and completeness.
+4. Evaluate the code for correctness and security. Prioritise in this order:
+   a. Correctness — does it do what the spec says? Are there crashes, null/nil dereferences,
+      or logic errors? Check that all values returned from service/DB calls are properly
+      error-checked before use.
+   b. Security — SQL injection, auth bypass, unvalidated input, exposed secrets.
+   c. Completeness — does the spec's acceptance criteria appear to be met?
+
+   Do NOT request changes for:
+   - Code comments or documentation on standard patterns (CRUD operations, straightforward
+     error handling, obvious variable names). Only request docs if the logic is genuinely
+     non-obvious to a reader unfamiliar with the codebase.
+   - Style preferences (formatting, naming conventions beyond language standards).
+   - Speculative future concerns ("what if X happens later").
+   - Minor refactors that don't affect correctness.
+   Each CHANGES_REQUESTED costs a full conductor round-trip. Only block on real issues.
+
 5. If the code is acceptable:
    - Do NOT merge. The orchestrator will handle merging.
    - Write "APPROVED" as the first line of your feedback file.
 6. If the code needs changes:
    - Do NOT merge.
    - Write "CHANGES_REQUESTED" as the first line of your feedback file.
-   - List specific issues that need fixing.
+   - List specific issues that need fixing. Be concrete — cite file and line number.
 7. Write your feedback to exactly this path: {feedback_path}
 """
 
