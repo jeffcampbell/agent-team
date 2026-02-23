@@ -920,10 +920,10 @@ class StationManager:
         return count
 
     def _fire_conductor_entropy(self, train: Train, branch: str, cwd: str | None = None):
-        """Fire the Conductor agent — nuke the branch and re-queue the spec."""
+        """Fire the Conductor agent — nuke the branch and terminate the spec."""
         activity(
             f"DERAILED [conductor:{train.train_id}] — branch {branch} has too many fix/update commits. "
-            f"Clearing branch and re-queuing spec."
+            f"Terminating spec (entropy threshold reached)."
         )
         # Kill conductor if still running
         conductor = train.conductor
@@ -948,12 +948,12 @@ class StationManager:
         if self._git_has_branch(branch, cwd=repo):
             self._git("branch", "-D", branch, cwd=repo)
 
-        # Re-queue spec
+        # Terminate spec (don't re-queue after entropy)
         if train.spec_path:
             in_progress = train.spec_path + ".in_progress"
             if os.path.exists(in_progress):
-                os.rename(in_progress, train.spec_path)
-                activity(f"RE-ROUTED spec: {os.path.basename(train.spec_path)}")
+                os.remove(in_progress)
+                activity(f"TERMINATED spec after entropy: {os.path.basename(train.spec_path)}")
 
         train.reset_pipeline()
 
