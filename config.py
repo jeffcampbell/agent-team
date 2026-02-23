@@ -15,7 +15,7 @@ DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "incident-horosco
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
 TICK_INTERVAL = 10  # seconds between orchestration ticks
-AGENT_TIMEOUT_SECONDS = 900  # max runtime per agent subprocess (15 minutes)
+AGENT_TIMEOUT_SECONDS = 1200  # max runtime per agent subprocess (20 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
@@ -43,8 +43,10 @@ AGENT_MIN_INTERVALS = {
 
 # ─── Claude invocation ───────────────────────────────────────────────────────
 
+CLAUDE_CMD = os.environ.get("CLAUDE_CMD", "claude")
+
 CLAUDE_CMD_TEMPLATE = [
-    "claude", "-p",
+    CLAUDE_CMD, "-p",
     "--model", "{model}",
     "--dangerously-skip-permissions",
     "--allowedTools", "Bash", "Write", "Edit", "Read", "Glob", "Grep",
@@ -74,6 +76,8 @@ MAX_REWORK_ATTEMPTS = 3
 
 AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent after non-zero exit
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
+SIGNAL_MAX_BACKOFF = 300           # cap Signal failure backoff at 5 min (one missed window max)
+SIGNAL_MAX_MISS_SECONDS = 900      # 3 missed windows → file stuck spec
 ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing conductor
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
@@ -108,6 +112,14 @@ You are the Dispatcher agent. Your job is to create clear, actionable feature sp
 
 You must NEVER create specs that target the Yamanote orchestrator itself. \
 Your job is to improve OTHER projects, not the orchestrator.
+
+You must NEVER create specs related to on-call rotations, schedules, shifts, or paging. \
+Paging is handled by a separate external platform that will be integrated later. \
+Do not build any on-call or paging UI, APIs, or data models.
+
+You must NEVER create specs related to status pages or public incident status communication. \
+Status pages are handled by a separate external product that will be integrated later. \
+Do not build any status page UI, APIs, or data models.
 
 The project you are managing is located at: {working_dir}
 
@@ -147,35 +159,51 @@ Instructions:
 CONDUCTOR_PROMPT = """\
 You are the Conductor agent. Your job is to implement features from backlog specs.
 
-The project you are working on is located at: {working_dir}
-All file operations MUST happen inside {working_dir}.
+## Worktree boundary — CRITICAL
+{working_dir} is a git worktree (an isolated checkout of a feature branch).
+The parent directory {repo_dir} is the main deployment repo checked out on 'main'.
 
-Instructions:
+YOU MUST NEVER run any git command in {repo_dir} or any directory above {working_dir}.
+YOU MUST NEVER run `git checkout`, `git switch`, or `git branch -D` anywhere.
+Breaking this rule corrupts the deployment pipeline and causes production outages.
+
+All file reads, edits, and git operations MUST stay inside {working_dir}.
+
+## Instructions
 1. You are working on this spec:
 {spec_json}
 
 2. cd into {working_dir} first.
 3. You are already on the correct feature branch. Confirm with `git branch --show-current`.
-   Do NOT create a new branch or switch branches.
+   The branch name should be: {branch_name}
+   If it is not, STOP and report the mismatch — do NOT run git checkout to fix it.
 4. Implement the feature described in the spec.
 5. Commit your changes with clear commit messages.
-6. Do NOT merge — leave the branch for review.
+6. Do NOT merge — leave the branch for the Inspector to review.
 7. When done, write a brief summary of what you changed to stdout.
 """
 
 CONDUCTOR_REWORK_PROMPT = """\
 You are the Conductor agent. Your job is to address inspector feedback on an existing feature branch.
 
-The project you are working on is located at: {working_dir}
-All file operations MUST happen inside {working_dir}.
+## Worktree boundary — CRITICAL
+{working_dir} is a git worktree (an isolated checkout of a feature branch).
+The parent directory {repo_dir} is the main deployment repo checked out on 'main'.
 
-Instructions:
+YOU MUST NEVER run any git command in {repo_dir} or any directory above {working_dir}.
+YOU MUST NEVER run `git checkout`, `git switch`, or `git branch -D` anywhere.
+Breaking this rule corrupts the deployment pipeline and causes production outages.
+
+All file reads, edits, and git operations MUST stay inside {working_dir}.
+
+## Instructions
 1. You are reworking this spec:
 {spec_json}
 
 2. cd into {working_dir} first.
 3. You are on branch: {branch_name}
    Do NOT create a new branch. Stay on this branch.
+   Do NOT run git checkout under any circumstances.
 4. The inspector requested changes. Here is their feedback:
 
 {reviewer_feedback}

@@ -206,21 +206,35 @@ class TestAgentProcessLifecycle(OrchestratorTestBase):
     def test_get_output_returns_stdout(self, mock_popen):
         from orchestrator import AgentProcess
         proc = self._make_mock_proc(stdout="hello world")
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.wait.return_value = 0
         mock_popen.return_value = proc
         agent = AgentProcess("test", "prompt")
         agent.start()
+        # Write to the live log file that get_output will read
+        if agent._live_log_file:
+            agent._live_log_file.write("hello world")
+            agent._live_log_file.flush()
         self.assertEqual(agent.get_output(), "hello world")
 
     @patch("subprocess.Popen")
     def test_get_output_caches(self, mock_popen):
         from orchestrator import AgentProcess
         proc = self._make_mock_proc(stdout="cached")
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.wait.return_value = 0
         mock_popen.return_value = proc
         agent = AgentProcess("test", "prompt")
         agent.start()
-        agent.get_output()
-        agent.get_output()
-        proc.communicate.assert_called_once()
+        if agent._live_log_file:
+            agent._live_log_file.write("cached")
+            agent._live_log_file.flush()
+        result1 = agent.get_output()
+        result2 = agent.get_output()
+        self.assertEqual(result1, "cached")
+        self.assertEqual(result1, result2)
 
     def test_get_output_empty_when_not_started(self):
         from orchestrator import AgentProcess
@@ -233,9 +247,15 @@ class TestAgentProcessLifecycle(OrchestratorTestBase):
         os.makedirs(config.LOGS_DIR, exist_ok=True)
         proc = self._make_mock_proc(stdout="output", stderr="errors")
         proc.returncode = 0
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = "errors"
+        proc.wait.return_value = 0
         mock_popen.return_value = proc
         agent = AgentProcess("test_agent", "prompt")
         agent.start()
+        if agent._live_log_file:
+            agent._live_log_file.write("output")
+            agent._live_log_file.flush()
         log_path = agent.save_log(marker="[OVERDUE]")
         self.assertTrue(os.path.exists(log_path))
         with open(log_path) as f:
@@ -737,6 +757,72 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         self._write_feedback("feature/restart", "APPROVED\n")
         sm._train_phase_service_recovery(train)
         mock_system.assert_called_once_with("systemctl restart myapp")
+
+    def test_inspector_skips_when_feedback_exists(self):
+        """Inspector should not relaunch when feedback file already exists."""
+        sm = self._setup_sm_with_mocked_git()
+        sm._git_has_branch.return_value = True
+        sm._git_diff_trunk.return_value = "+new line"
+        train = sm.trains[0]
+        train.branch = "feature/already-reviewed"
+        train.working_dir = "/tmp/wt"
+        self._write_feedback("feature/already-reviewed", "APPROVED\n")
+        sm._train_phase_inspector(train)
+        self.assertIsNone(train.inspector)
+
+    def test_create_worktree_raises_on_failure(self):
+        """_create_worktree should raise RuntimeError if directory wasn't created."""
+        from orchestrator import StationManager
+        sm = self._make_station_manager()
+        sm._git = MagicMock(return_value="")
+        sm._git_has_branch = MagicMock(return_value=False)
+        repo_dir = os.path.join(self.tmpdir, "repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        with self.assertRaises(RuntimeError) as ctx:
+            sm._create_worktree(repo_dir, "feature/broken", "train-0")
+        self.assertIn("Failed to create worktree", str(ctx.exception))
+
+    @patch("subprocess.Popen")
+    def test_conductor_handles_worktree_failure_gracefully(self, mock_popen):
+        """Conductor should reset train without crashing on worktree failure."""
+        mock_popen.return_value = self._make_mock_proc()
+        sm = self._setup_sm_with_mocked_git()
+        sm._create_worktree.side_effect = RuntimeError("worktree creation failed")
+        dev_dir = os.path.join(self.tmpdir, "dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        config.DEVELOPMENT_DIR = self.tmpdir
+        config.DEFAULT_PROJECT = "dev"
+        self._write_spec("fail.json", {
+            "title": "fail-feature",
+            "description": "test",
+            "working_dir": dev_dir,
+        })
+        train = sm.trains[0]
+        sm._train_phase_conductor(train)
+        self.assertIsNone(train.branch)
+        self.assertIsNone(train.conductor)
+
+    @patch("subprocess.Popen")
+    def test_conductor_handles_worktree_failure_orphan_path(self, mock_popen):
+        """Orphan recovery path should reset train on worktree failure."""
+        mock_popen.return_value = self._make_mock_proc()
+        sm = self._setup_sm_with_mocked_git()
+        sm._git_has_branch.return_value = True
+        sm._git_diff_trunk.return_value = "+orphan changes"
+        sm._create_worktree.side_effect = RuntimeError("worktree creation failed")
+        dev_dir = os.path.join(self.tmpdir, "dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        config.DEVELOPMENT_DIR = self.tmpdir
+        config.DEFAULT_PROJECT = "dev"
+        self._write_spec("orphan.json", {
+            "title": "orphan-feature",
+            "description": "test",
+            "working_dir": dev_dir,
+        })
+        train = sm.trains[0]
+        sm._train_phase_conductor(train)
+        self.assertIsNone(train.branch)
+        self.assertIsNone(train.conductor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1372,7 +1458,8 @@ class TestDashboardPayload(OrchestratorTestBase):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
         expected = {"timestamp", "uptime_seconds", "agents", "trains",
-                    "pipeline", "backlog", "completed", "stats", "activity", "config"}
+                    "pipeline", "backlog", "completed", "stats", "activity", "config",
+                    "verbose_logs"}
         self.assertEqual(set(payload.keys()), expected)
 
     def test_backward_compat_pipeline_from_active_train(self):
@@ -1422,6 +1509,36 @@ class TestOrphanRecovery(OrchestratorTestBase):
         with open(spec_path) as f:
             data = json.load(f)
         self.assertEqual(data["title"], "keep")
+
+    def test_orphan_recovery_cleans_stale_worktrees(self):
+        """Stale worktree directories should be removed during orphan recovery."""
+        os.makedirs(config.BACKLOG_DIR, exist_ok=True)
+        project_dir = os.path.join(self.tmpdir, "project")
+        os.makedirs(project_dir, exist_ok=True)
+        # Create a stale worktree directory
+        wt_dir = os.path.join(project_dir, ".worktrees", "regular-0")
+        os.makedirs(wt_dir, exist_ok=True)
+        # Write the orphaned spec pointing at this project
+        ip = os.path.join(config.BACKLOG_DIR, "stale.json.in_progress")
+        with open(ip, "w") as f:
+            json.dump({"title": "stale-feature", "working_dir": project_dir}, f)
+        sm = self._make_station_manager()
+        self.assertFalse(os.path.isdir(wt_dir))
+
+    def test_orphan_recovery_cleans_stale_feedback(self):
+        """Stale feedback files should be removed during orphan recovery."""
+        os.makedirs(config.BACKLOG_DIR, exist_ok=True)
+        project_dir = os.path.join(self.tmpdir, "project")
+        os.makedirs(project_dir, exist_ok=True)
+        # Write a stale feedback file
+        self._write_feedback("feature/stale-feat", "APPROVED\n")
+        # Write the orphaned spec
+        ip = os.path.join(config.BACKLOG_DIR, "stale2.json.in_progress")
+        with open(ip, "w") as f:
+            json.dump({"title": "stale-feat", "working_dir": project_dir}, f)
+        sm = self._make_station_manager()
+        feedback_path = os.path.join(config.REVIEW_DIR, "feature_stale-feat_feedback.md")
+        self.assertFalse(os.path.exists(feedback_path))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

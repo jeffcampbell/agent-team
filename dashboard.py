@@ -51,7 +51,19 @@ def _agent_status_dict(agent, cooldown_until, failures, now):
     }
 
 
-def _build_status_payload(station_manager) -> dict:
+def _read_live_log(agent_name: str, lines: int = 150) -> list:
+    """Return the last N lines from an agent's live stdout log file."""
+    safe_name = agent_name.replace(":", "-").replace("/", "-")
+    path = f"/tmp/yamanote-{safe_name}-live.log"
+    try:
+        with open(path, "r") as f:
+            all_lines = f.readlines()
+        return [l.rstrip("\n") for l in all_lines[-lines:]]
+    except (OSError, FileNotFoundError):
+        return []
+
+
+def _build_status_payload(station_manager, verbose: bool = False) -> dict:
     """Snapshot mutable StationManager state into a JSON-safe dict.
 
     Thread safety: we copy all mutable containers at the top so the rest
@@ -228,11 +240,22 @@ def _build_status_payload(station_manager) -> dict:
         # Support both new "TERMINUS" and old "MERGED" keywords
         if ("TERMINUS" not in line and "MERGED" not in line) or "branch feature/" not in line:
             continue
-        # Format: [YYYY-MM-DD HH:MM:SS]  TERMINUS [train-id] — branch feature/title merged to trunk.
+        # Format varies:
+        #   old: [TS]  TERMINUS — branch feature/title merged to trunk.
+        #   new: [TS]  TERMINUS [train-id] — branch feature/title approved, merging to trunk.
         try:
             ts = line[1:20]  # "YYYY-MM-DD HH:MM:SS"
             branch_start = line.index("branch feature/") + len("branch ")
-            branch_end = line.index(" merged to trunk")
+            # Try both old and new suffixes
+            branch_end = -1
+            for suffix in (" merged to trunk", " approved, merging to trunk"):
+                try:
+                    branch_end = line.index(suffix)
+                    break
+                except ValueError:
+                    continue
+            if branch_end < 0:
+                continue
             branch = line[branch_start:branch_end]
             title = branch.replace("feature/", "")
             completed_out.append({"title": title, "merged_at": ts})
@@ -252,6 +275,20 @@ def _build_status_payload(station_manager) -> dict:
         "trains": {k: v for k, v in config.TRAIN_CONFIG.items()},
     }
 
+    # ── Verbose agent logs (only when requested) ──
+    verbose_logs = {}
+    if verbose:
+        for name, agent_info in agents_out.items():
+            if agent_info["status"] == "running":
+                verbose_logs[name] = _read_live_log(name)
+        for train in trains:
+            if train.conductor is not None and train.conductor.proc is not None and train.conductor.proc.poll() is None:
+                key = f"conductor:{train.train_id}"
+                verbose_logs[key] = _read_live_log(key)
+            if train.inspector is not None and train.inspector.proc is not None and train.inspector.proc.poll() is None:
+                key = f"inspector:{train.train_id}"
+                verbose_logs[key] = _read_live_log(key)
+
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "uptime_seconds": round(now - start_time, 1),
@@ -263,6 +300,7 @@ def _build_status_payload(station_manager) -> dict:
         "stats": stats_out,
         "activity": activity_lines,
         "config": config_out,
+        "verbose_logs": verbose_logs,
     }
 
 
@@ -271,8 +309,9 @@ def _make_handler(station_manager):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/api/status":
-                payload = json.dumps(_build_status_payload(station_manager)).encode()
+            if self.path in ("/api/status", "/api/status?verbose=1"):
+                verbose = self.path.endswith("?verbose=1")
+                payload = json.dumps(_build_status_payload(station_manager, verbose=verbose)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))

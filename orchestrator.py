@@ -36,6 +36,10 @@ def activity(msg: str):
         pass
 
 
+# Pattern: match lines containing ERROR/WARNING/CRITICAL/FATAL (case-insensitive)
+_WATCHER_PATTERN = re.compile(r'\b(ERROR|WARNING|WARN|CRITICAL|FATAL)\b', re.IGNORECASE)
+
+
 class AgentProcess:
     """Thin wrapper around a single Claude subprocess."""
 
@@ -48,6 +52,8 @@ class AgentProcess:
         self.start_time: float | None = None
         self._output: str | None = None
         self._stderr: str | None = None
+        self._live_log_path: str | None = None
+        self._live_log_file = None
 
     def start(self) -> subprocess.Popen:
         cmd = [arg.format(prompt=self.prompt, model=self.model)
@@ -55,9 +61,13 @@ class AgentProcess:
         log.info("Starting agent %s (cwd=%s)", self.name, self.cwd or "default")
         # Strip CLAUDECODE env var so nested claude sessions are allowed
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        # Write stdout to a live log file so the dashboard can tail it during the run
+        safe_name = self.name.replace(":", "-").replace("/", "-")
+        self._live_log_path = f"/tmp/yamanote-{safe_name}-live.log"
+        self._live_log_file = open(self._live_log_path, "w", buffering=1)
         self.proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=self._live_log_file,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
@@ -84,9 +94,21 @@ class AgentProcess:
             return self._output
         if self.proc is None:
             return ""
-        stdout, stderr = self.proc.communicate()
-        self._output = stdout
-        self._stderr = stderr
+        # Drain stderr pipe (blocks until process exits), then read stdout from file
+        if self._stderr is None:
+            self._stderr = self.proc.stderr.read() if self.proc.stderr else ""
+        self.proc.wait()
+        if self._live_log_file is not None:
+            try:
+                self._live_log_file.close()
+            except Exception:
+                pass
+            self._live_log_file = None
+        try:
+            with open(self._live_log_path, "r") as f:
+                self._output = f.read()
+        except (OSError, TypeError):
+            self._output = ""
         return self._output
 
     def get_stderr(self) -> str:
@@ -202,8 +224,18 @@ class StationManager:
         self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
         self.last_merge_time: float = 0.0  # timestamp of last merge (to skip Signal during deployment)
 
+        # Log watcher: independent byte offsets (don't interfere with Signal's offsets)
+        self.watcher_log_offsets: dict[str, int] = {}
+        # Dedup: error signature → timestamp when we last filed a spec for it
+        self.watcher_recent_specs: dict[str, float] = {}
+        # Signal health tracking
+        self.signal_last_success_time: float = time.time()  # init to now — no false alarms on startup
+        self.signal_stuck_spec_filed: bool = False
+
         # Ops agent: track HEAD before ops launch to detect new commits
         self._ops_head_before: str | None = None
+        # Deferred restart: set True when ops wants to restart but a conductor is mid-run
+        self.restart_pending: bool = False
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -348,9 +380,10 @@ class StationManager:
                     )
                     return False
                 self.consecutive_failures[name] = self.consecutive_failures.get(name, 0) + 1
+                max_backoff = config.SIGNAL_MAX_BACKOFF if name == "signal" else config.MAX_ERROR_BACKOFF
                 backoff = min(
                     config.AGENT_ERROR_COOLDOWN * (2 ** self.consecutive_failures[name]),
-                    config.MAX_ERROR_BACKOFF,
+                    max_backoff,
                 )
                 cooldown_until = time.time() + backoff
                 self.agent_cooldowns[name] = cooldown_until
@@ -360,6 +393,9 @@ class StationManager:
                     self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
+                if name == "signal":
+                    self.signal_last_success_time = time.time()
+                    self.signal_stuck_spec_filed = False
             self._sre_prev_offsets.clear()
             return False
         if agent.is_timed_out():
@@ -474,7 +510,12 @@ class StationManager:
 
         # Clean up stale worktree at this path if it exists
         if os.path.isdir(worktree_path):
-            self._git("worktree", "remove", "--force", worktree_path, cwd=repo_dir)
+            result = subprocess.run(
+                ["git", "worktree", "remove", "--force", worktree_path],
+                capture_output=True, text=True, cwd=repo_dir,
+            )
+            if result.returncode != 0 and os.path.isdir(worktree_path):
+                shutil.rmtree(worktree_path, ignore_errors=True)
 
         # Create worktree: new branch if it doesn't exist, existing branch if it does
         if self._git_has_branch(branch, cwd=repo_dir):
@@ -496,8 +537,16 @@ class StationManager:
         if not repo_dir or not worktree_path:
             return
         if os.path.isdir(worktree_path):
-            self._git("worktree", "remove", "--force", worktree_path, cwd=repo_dir)
-            activity(f"WORKTREE removed: {worktree_path}")
+            result = subprocess.run(
+                ["git", "worktree", "remove", "--force", worktree_path],
+                capture_output=True, text=True, cwd=repo_dir,
+            )
+            if result.returncode != 0 and os.path.isdir(worktree_path):
+                # Directory exists but isn't registered with git — remove it directly
+                shutil.rmtree(worktree_path, ignore_errors=True)
+                activity(f"WORKTREE force-removed (was not registered with git): {worktree_path}")
+            else:
+                activity(f"WORKTREE removed: {worktree_path}")
         # Prune any stale worktree references
         self._git("worktree", "prune", cwd=repo_dir)
 
@@ -1061,6 +1110,8 @@ class StationManager:
             spec_json=json.dumps(spec_data, indent=2),
             spec_title=spec_title,
             working_dir=worktree_path,
+            repo_dir=train.repo_dir or worktree_path,
+            branch_name=branch_name,
         )
         agent = self._launch_train_agent(train, "conductor", prompt, cwd=worktree_path)
         if agent is None:
@@ -1180,10 +1231,121 @@ class StationManager:
             branch_name=branch,
             reviewer_feedback=reviewer_feedback,
             working_dir=cwd,
+            repo_dir=train.repo_dir or cwd,
         )
         self._launch_train_agent(train, "conductor", prompt, cwd=cwd)
         train.edits_tallied = False
         os.remove(feedback_path)
+
+    def _signal_project_dir(self) -> str:
+        for train in self.trains:
+            if train.repo_dir:
+                return train.repo_dir
+        return os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+
+    def _log_watcher_tick(self, project_dir: str):
+        """Per-tick grep for ERROR/WARNING lines. File immediate spec without LLM."""
+        log_path = self._find_app_log(project_dir)
+        if not log_path:
+            return
+
+        # Initialize offset to current EOF on first visit (don't scan old history)
+        if project_dir not in self.watcher_log_offsets:
+            try:
+                self.watcher_log_offsets[project_dir] = os.path.getsize(log_path)
+            except OSError:
+                pass
+            return
+
+        stored = self.watcher_log_offsets[project_dir]
+        try:
+            size = os.path.getsize(log_path)
+        except OSError:
+            return
+        if size < stored:  # rotation
+            stored = 0
+        if size == stored:
+            return
+
+        with open(log_path, "r", errors="replace") as f:
+            f.seek(stored)
+            new_text = f.read()
+        self.watcher_log_offsets[project_dir] = size
+
+        # Find matching lines
+        matching = [l for l in new_text.splitlines() if _WATCHER_PATTERN.search(l)]
+        if not matching:
+            return
+
+        # Prune stale dedup entries (older than 1 hour)
+        now = time.time()
+        self.watcher_recent_specs = {
+            k: v for k, v in self.watcher_recent_specs.items() if now - v < 3600
+        }
+
+        # Build a signature from the first matching line (normalised)
+        sig = re.sub(r'\d+', 'N', matching[0])[:120]
+        if sig in self.watcher_recent_specs:
+            return
+
+        # Skip if an open Signal bug already covers this
+        open_bugs = self._signal_open_bugs()
+        if len(open_bugs) >= config.MAX_SRE_OPEN_BUGS:
+            return
+
+        # File spec immediately (no LLM)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        summary = re.sub(r'[^a-z0-9]+', '_', matching[0][:40].lower()).strip('_')
+        spec = {
+            "title": f"log-alert-{summary}",
+            "description": (
+                "Log watcher detected ERROR/WARNING lines. Immediate triage required.\n\n"
+                "Matching lines:\n" + "\n".join(matching[:20])
+            ),
+            "priority": "high",
+            "complexity": "low",
+            "created_by": "watcher",
+            "working_dir": project_dir,
+        }
+        fname = os.path.join(config.BACKLOG_DIR, f"{ts}_alert_{summary}.json")
+        with open(fname, "w") as f:
+            json.dump(spec, f, indent=2)
+        self.watcher_recent_specs[sig] = now
+        activity(f"ALERT  [watcher] filed spec: {spec['title']}")
+
+    def _check_signal_health(self):
+        """If Signal hasn't run successfully in > SIGNAL_MAX_MISS_SECONDS, file a spec."""
+        if self.signal_stuck_spec_filed:
+            return
+        now = time.time()
+        missed = now - self.signal_last_success_time
+        if missed <= config.SIGNAL_MAX_MISS_SECONDS:
+            return
+        if self._is_agent_active("signal"):
+            return
+
+        cooldown_rem = max(0, self.agent_cooldowns.get("signal", 0) - now)
+        failures = self.consecutive_failures.get("signal", 0)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        spec = {
+            "title": "signal-agent-not-running-on-schedule",
+            "description": (
+                f"Signal agent has not completed a successful run in {int(missed)}s "
+                f"(threshold: {config.SIGNAL_MAX_MISS_SECONDS}s / 3 missed 5-min windows).\n\n"
+                f"Consecutive failures: {failures}\n"
+                f"Cooldown remaining: {int(cooldown_rem)}s\n\n"
+                "Investigate why Signal is failing and fix the root cause so it can "
+                "resume its 5-minute monitoring schedule."
+            ),
+            "priority": "high",
+            "complexity": "low",
+            "created_by": "orchestrator",
+        }
+        fname = os.path.join(config.BACKLOG_DIR, f"{ts}_signal_stuck.json")
+        with open(fname, "w") as f:
+            json.dump(spec, f, indent=2)
+        self.signal_stuck_spec_filed = True
+        activity(f"ALERT  [orchestrator] Signal stuck for {int(missed)}s — filed spec")
 
     def _phase_signal(self):
         """If a log file exists in the current project, launch Signal to analyze."""
@@ -1194,15 +1356,7 @@ class StationManager:
         if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
 
-        # Check current working projects, or default to configured project
-        # Use the first train's repo_dir (the real project, not the worktree)
-        project_dir = None
-        for train in self.trains:
-            if train.repo_dir:
-                project_dir = train.repo_dir
-                break
-        if not project_dir:
-            project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+        project_dir = self._signal_project_dir()
 
         # Layer 1: hard cap on open Signal bugs
         open_bugs = self._signal_open_bugs()
@@ -1215,7 +1369,9 @@ class StationManager:
 
         log_lines = self._read_new_log_lines(project_dir)
         # Skip if empty or too few new lines to warrant analysis
+        # Update health timestamp even when skipping — Signal is functioning, logs are just quiet
         if not log_lines or len(log_lines.splitlines()) < 10:
+            self.signal_last_success_time = time.time()
             return
 
         # Layer 2: pass existing bug titles into prompt for LLM dedup
@@ -1409,7 +1565,16 @@ class StationManager:
             current_head = self._git_last_commit(cwd=config.BASE_DIR)
             if current_head != self._ops_head_before:
                 self._ops_head_before = None
-                self._request_self_restart()
+                conducting = any(
+                    t.conductor is not None and t.conductor.proc is not None
+                    and t.conductor.proc.poll() is None
+                    for t in self.trains
+                )
+                if conducting:
+                    activity("OPS RESTART deferred — conductor is mid-run, will restart when it finishes")
+                    self.restart_pending = True
+                else:
+                    self._request_self_restart()
             self._ops_head_before = None
             return
 
@@ -1446,8 +1611,30 @@ class StationManager:
             activity(f"  {agent_name}: model={model}  min_interval={interval}s")
         activity("=" * 60)
 
+        last_tick_time = time.time()
         try:
             while True:
+                # Sleep/wake detection — if the gap since the last tick is much larger
+                # than TICK_INTERVAL, the machine likely slept. Advance all timestamps
+                # so rate limits stay meaningful and agents don't burst-launch on wake.
+                now = time.time()
+                gap = now - last_tick_time
+                if gap > config.TICK_INTERVAL * 6:  # ~60s threshold
+                    drift = gap - config.TICK_INTERVAL
+                    activity(f"WAKE DETECTED — {int(gap)}s gap, advancing timestamps by {int(drift)}s")
+                    for k in list(self.last_launch_times):
+                        self.last_launch_times[k] += drift
+                    for k in list(self.agent_cooldowns):
+                        self.agent_cooldowns[k] += drift
+                    if self.sleep_until > 0:
+                        self.sleep_until += drift
+                    for train in self.trains:
+                        if train.conductor_cooldown_until > 0:
+                            train.conductor_cooldown_until += drift
+                        if train.inspector_cooldown_until > 0:
+                            train.inspector_cooldown_until += drift
+                last_tick_time = now
+
                 # Sleep mode check
                 if time.time() < self.sleep_until:
                     remaining = int(self.sleep_until - time.time())
@@ -1465,9 +1652,22 @@ class StationManager:
                     self._train_phase_entropy_check(train)
                     self._train_phase_station_manager_check(train)
 
-                # Global phases (unchanged)
+                # Deferred ops restart — fire once all conductors have finished
+                if self.restart_pending:
+                    conducting = any(
+                        t.conductor is not None and t.conductor.proc is not None
+                        and t.conductor.proc.poll() is None
+                        for t in self.trains
+                    )
+                    if not conducting:
+                        self._request_self_restart()
+
+                # Global phases
+                project_dir = self._signal_project_dir()
+                self._log_watcher_tick(project_dir)     # fast grep every tick
+                self._phase_signal()                    # deep analysis every 5 min
+                self._check_signal_health()             # file spec if Signal is stuck
                 self._phase_dispatcher()
-                self._phase_signal()
                 self._phase_ops()
 
                 # Tick summary

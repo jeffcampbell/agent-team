@@ -272,9 +272,17 @@
   /* ── Activity Row (below the board) ── */
   .activity-row {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 2fr 1fr;
     gap: 10px; padding: 0 24px 16px;
   }
+  .activity-row.no-verbose { grid-template-columns: 1fr; }
+  @media (max-width: 800px) { .activity-row { grid-template-columns: 1fr; } }
+
+  .verbose-agent { margin-bottom: 14px; }
+  .verbose-agent-label { font-size: 0.72rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .verbose-log { background: #0d0d0d; color: #d4d4d4; font-family: monospace; font-size: 0.72rem; line-height: 1.5; padding: 8px; border-radius: 4px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .verbose-empty { color: #666; font-size: 0.78rem; font-style: italic; }
+  #verboseToggle.active { background: #333; color: #fff; border-color: #333; }
 
   .panel {
     background: #fff; padding: 14px;
@@ -303,6 +311,7 @@
     font-size: 0.7rem; line-height: 1.7;
   }
   .activity-line { white-space: pre-wrap; word-break: break-all; }
+  .line-restart  { color: #2d7a00; font-weight: 700; border-top: 1px solid #ccc; margin-top: 4px; padding-top: 4px; }
   .line-departed { color: #2d8a2d; }
   .line-arrived  { color: #888; }
   .line-error    { color: #e81123; }
@@ -488,10 +497,17 @@
 </div>
 
 <!-- Activity Row -->
-<div class="activity-row" id="activityRow">
+<div class="activity-row no-verbose" id="activityRow">
   <div class="panel activity-panel" id="activityPanel">
-    <h3>Activity</h3>
+    <h3 style="display:flex;align-items:center;justify-content:space-between">
+      Activity
+      <button id="verboseToggle" onclick="toggleVerbose()" style="font-size:0.72rem;padding:3px 10px;border-radius:4px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;color:#555">Verbose</button>
+    </h3>
     <div class="activity-feed" id="activityFeed"></div>
+  </div>
+  <div class="panel" id="verbosePanel" style="display:none">
+    <h3>Agent Output <span style="font-size:0.72rem;font-weight:400;color:#999">(live stdout)</span></h3>
+    <div id="verboseLogs"></div>
   </div>
 </div>
 
@@ -900,13 +916,14 @@ function renderArrived(completed) {
 
 function classifyLine(line) {
   var l = line.toLowerCase();
+  if (l.includes('yamanote line open') || l.includes('ops restart') || l.includes('all agents stopped')) return 'line-restart';
   if (l.includes('departed') || l.includes('start ') || l.includes('start\t')) return 'line-departed';
   if (l.includes('arrived') || l.includes('done ') || l.includes('done\t')) return 'line-arrived';
   if (l.includes('error') || l.includes('overdue') || l.includes('timeout') ||
       l.includes('delay') || l.includes('cooldown') || l.includes('derailed') ||
       l.includes('fired') || l.includes('cancelled') || l.includes('abandoned')) return 'line-error';
   if (l.includes('terminus') || l.includes('merged')) return 'line-terminus';
-  if (l.includes('ops report') || l.includes('ops restart') || l.includes('meta')) return 'line-ops';
+  if (l.includes('ops report') || l.includes('meta')) return 'line-ops';
   return 'line-default';
 }
 
@@ -933,9 +950,47 @@ function renderUptime(secs) {
 }
 
 var failCount = 0;
+var verboseMode = false;
+
+function toggleVerbose() {
+  verboseMode = !verboseMode;
+  var btn = document.getElementById('verboseToggle');
+  var panel = document.getElementById('verbosePanel');
+  var row = document.getElementById('activityRow');
+  if (verboseMode) {
+    btn.classList.add('active');
+    panel.style.display = '';
+    row.classList.remove('no-verbose');
+  } else {
+    btn.classList.remove('active');
+    panel.style.display = 'none';
+    row.classList.add('no-verbose');
+  }
+  refresh();
+}
+
+function renderVerboseLogs(logs) {
+  var el = document.getElementById('verboseLogs');
+  if (!logs || Object.keys(logs).length === 0) {
+    el.innerHTML = '<div class="verbose-empty">No agents currently running.</div>';
+    return;
+  }
+  el.innerHTML = Object.keys(logs).map(function(name) {
+    var lines = logs[name];
+    var content = lines.length > 0
+      ? lines.map(function(l) { return l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }).join('\n')
+      : '<span style="color:#555">(no output yet)</span>';
+    return '<div class="verbose-agent">' +
+      '<div class="verbose-agent-label">' + name + '</div>' +
+      '<div class="verbose-log" id="vlog-' + name.replace(/[^a-z0-9]/gi,'-') + '">' + content + '</div>' +
+      '</div>';
+  }).join('');
+  el.querySelectorAll('.verbose-log').forEach(function(d) { d.scrollTop = d.scrollHeight; });
+}
 
 function refresh() {
-  fetch('/api/status')
+  var url = verboseMode ? '/api/status?verbose=1' : '/api/status';
+  fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       failCount = 0;
@@ -956,6 +1011,7 @@ function refresh() {
       renderArrived(data.completed || []);
       renderActivity(data.activity || []);
       renderConfig(data.config || {});
+      if (verboseMode) renderVerboseLogs(data.verbose_logs || {});
     })
     .catch(function() {
       failCount++;
