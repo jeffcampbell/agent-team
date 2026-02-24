@@ -4,14 +4,59 @@ Serves a dark-themed status page and a JSON API endpoint.
 Started as a daemon thread — does not block orchestrator shutdown.
 """
 
+import base64
 import glob
 import json
+import logging
 import os
+import subprocess
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import config
+
+_log = logging.getLogger("orchestrator")
+
+# ── E-Ink preview cache (updated by background thread) ──────────────────────
+_EINK_REMOTE = "pi@10.168.168.248"
+_EINK_PROJECT = "/home/pi/Development/page-a-day"
+_eink_cache = {"png_bytes": None, "info": {}, "updated": 0, "error": None}
+_eink_lock = threading.Lock()
+_EINK_REFRESH_INTERVAL = 120  # seconds
+
+
+def _fetch_eink_preview():
+    """SSH to remote Pi, run preview helper, return (png_bytes, info_dict)."""
+    result = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+         _EINK_REMOTE, "python3", f"{_EINK_PROJECT}/preview_helper.py"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[:200])
+    data = json.loads(result.stdout.strip())
+    if data.get("error"):
+        raise RuntimeError(data["error"])
+    png_bytes = base64.b64decode(data["png"])
+    return png_bytes, data.get("info", {})
+
+
+def _eink_refresh_loop():
+    """Background thread that periodically fetches e-ink preview."""
+    while True:
+        try:
+            png_bytes, info = _fetch_eink_preview()
+            with _eink_lock:
+                _eink_cache["png_bytes"] = png_bytes
+                _eink_cache["info"] = info
+                _eink_cache["updated"] = time.time()
+                _eink_cache["error"] = None
+        except Exception as e:
+            with _eink_lock:
+                _eink_cache["error"] = str(e)
+            _log.debug("E-ink preview fetch failed: %s", e)
+        time.sleep(_EINK_REFRESH_INTERVAL)
 
 # Cache the HTML file at import time (zero disk I/O per request)
 _HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
@@ -317,6 +362,31 @@ def _make_handler(station_manager):
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+            elif self.path == "/api/eink-preview":
+                with _eink_lock:
+                    png = _eink_cache["png_bytes"]
+                    info = _eink_cache["info"]
+                    updated = _eink_cache["updated"]
+                    error = _eink_cache["error"]
+                if png:
+                    payload = json.dumps({
+                        "png_base64": base64.b64encode(png).decode(),
+                        "title": info.get("title", ""),
+                        "description": info.get("description", ""),
+                        "update_interval": info.get("update_interval", 0),
+                        "updated_ago": round(time.time() - updated) if updated else None,
+                        "error": error,
+                    }).encode()
+                else:
+                    payload = json.dumps({
+                        "png_base64": None,
+                        "error": error or "No preview available yet",
+                    }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
             elif self.path == "/" or self.path == "/index.html":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -352,3 +422,7 @@ def start_dashboard(station_manager, port: int):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("Dashboard running at http://0.0.0.0:%d/", port)
+
+    # Start e-ink preview refresh thread
+    eink_thread = threading.Thread(target=_eink_refresh_loop, daemon=True)
+    eink_thread.start()

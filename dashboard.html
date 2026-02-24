@@ -319,6 +319,69 @@
   .line-ops      { color: #888; }
   .line-default  { color: #666; }
 
+  /* ── E-Ink Display Preview ── */
+  .eink-section {
+    padding: 0 24px 16px;
+    display: flex; justify-content: center;
+  }
+  .eink-card {
+    background: #0c0c0c;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    width: 100%;
+    max-width: 440px;
+    overflow: hidden;
+  }
+  .eink-header {
+    background: linear-gradient(135deg, #0d1a0d 0%, #1a2a1a 50%, #0d1a0d 100%);
+    border-bottom: 1px solid #2a4a2a44;
+    padding: 10px 14px 8px;
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .eink-title {
+    font-size: 0.9rem; font-weight: 800;
+    letter-spacing: 4px; color: #9acd32;
+    text-transform: uppercase;
+  }
+  .eink-meta {
+    font-size: 0.55rem; color: #4a6a2a;
+    letter-spacing: 1px;
+  }
+  .eink-body {
+    padding: 14px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .eink-frame {
+    background: #fff;
+    border: 2px solid #333;
+    border-radius: 2px;
+    padding: 4px;
+    display: inline-block;
+    line-height: 0;
+  }
+  .eink-frame img {
+    width: 250px; height: 122px;
+    image-rendering: pixelated;
+  }
+  .eink-info {
+    font-size: 0.72rem; color: #666;
+    text-align: center;
+  }
+  .eink-app-title {
+    font-size: 0.78rem; color: #ccc;
+    font-weight: 600;
+  }
+  .eink-error {
+    font-size: 0.72rem; color: #e81123;
+    font-style: italic;
+  }
+  .eink-placeholder {
+    width: 250px; height: 122px;
+    background: #1a1a1a;
+    display: flex; align-items: center; justify-content: center;
+    color: #444; font-size: 0.78rem;
+  }
+
   .config-section { padding: 0 24px 24px; }
   details { background: #fff; border: 1px solid #e0e0e0; border-radius: 4px; }
   details summary {
@@ -443,6 +506,25 @@
 
 <div class="agents-grid" id="agentsGrid"></div>
 <div class="stats-bar" id="statsBar"></div>
+
+<!-- E-Ink Display Preview -->
+<div class="eink-section">
+  <div class="eink-card">
+    <div class="eink-header">
+      <span class="eink-title">Display</span>
+      <span class="eink-meta" id="einkMeta">raspi-eink</span>
+    </div>
+    <div class="eink-body">
+      <div class="eink-frame">
+        <div class="eink-placeholder" id="einkPlaceholder">Loading preview...</div>
+        <img id="einkImg" style="display:none" alt="E-Ink Display">
+      </div>
+      <div class="eink-app-title" id="einkAppTitle"></div>
+      <div class="eink-info" id="einkInfo"></div>
+      <div class="eink-error" id="einkError"></div>
+    </div>
+  </div>
+</div>
 
 <!-- Station Board -->
 <div class="station-section">
@@ -1021,10 +1103,47 @@ function refresh() {
     });
 }
 
+function refreshEink() {
+  fetch('/api/eink-preview')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var img = document.getElementById('einkImg');
+      var placeholder = document.getElementById('einkPlaceholder');
+      var title = document.getElementById('einkAppTitle');
+      var info = document.getElementById('einkInfo');
+      var error = document.getElementById('einkError');
+      var meta = document.getElementById('einkMeta');
+
+      if (data.png_base64) {
+        img.src = 'data:image/png;base64,' + data.png_base64;
+        img.style.display = '';
+        placeholder.style.display = 'none';
+        title.textContent = data.title || '';
+        var parts = [];
+        if (data.update_interval) parts.push('refresh: ' + fmtDuration(data.update_interval));
+        if (data.updated_ago != null) parts.push('fetched ' + fmtDuration(data.updated_ago) + ' ago');
+        info.textContent = parts.join(' · ');
+        error.textContent = '';
+        meta.textContent = 'raspi-eink';
+      } else {
+        img.style.display = 'none';
+        placeholder.style.display = 'flex';
+        placeholder.textContent = 'No preview';
+        title.textContent = '';
+        info.textContent = '';
+        error.textContent = data.error || '';
+        meta.textContent = 'offline';
+      }
+    })
+    .catch(function() {});
+}
+
 updateClock();
 setInterval(updateClock, 1000);
 refresh();
 setInterval(refresh, REFRESH_MS);
+refreshEink();
+setInterval(refreshEink, 30000);
 </script>
 </body>
 </html>
