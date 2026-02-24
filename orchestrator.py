@@ -232,6 +232,9 @@ class StationManager:
         self.signal_last_success_time: float = time.time()  # init to now — no false alarms on startup
         self.signal_stuck_spec_filed: bool = False
 
+        # Wake detection logging throttle (reduce log noise)
+        self.last_wake_log_time: float = 0.0
+
         # Ops agent: track HEAD before ops launch to detect new commits
         self._ops_head_before: str | None = None
         # Deferred restart: set True when ops wants to restart but a conductor is mid-run
@@ -1637,7 +1640,10 @@ class StationManager:
                 gap = now - last_tick_time
                 if gap > config.TICK_INTERVAL * 6:  # ~60s threshold
                     drift = gap - config.TICK_INTERVAL
-                    activity(f"WAKE DETECTED — {int(gap)}s gap, advancing timestamps by {int(drift)}s")
+                    # Only log wake events every 5 minutes to reduce noise
+                    if now - self.last_wake_log_time >= 300:
+                        activity(f"WAKE DETECTED — {int(gap)}s gap, advancing timestamps by {int(drift)}s")
+                        self.last_wake_log_time = now
                     for k in list(self.last_launch_times):
                         self.last_launch_times[k] += drift
                     for k in list(self.agent_cooldowns):
