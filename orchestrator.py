@@ -1544,8 +1544,11 @@ class StationManager:
 
         try:
             with open(feedback_path) as f:
-                # Check first 5 lines for APPROVED (inspector may add markdown headers)
-                approved = any(line.strip() == "APPROVED" for line in [f.readline() for _ in range(5)])
+                # Check first 5 lines for APPROVED (handle markdown formatting variations)
+                approved = any(
+                    re.search(r'\bAPPROVED\b', line.strip(), re.IGNORECASE)
+                    for line in [f.readline() for _ in range(5)]
+                )
         except OSError:
             return
 
