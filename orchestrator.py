@@ -305,13 +305,24 @@ class StationManager:
                                 shutil.rmtree(wt_path, ignore_errors=True)
                             activity(f"CLEANUP stale worktree: {wt_path}")
 
-            # Clean up stale feedback file for this branch
+            # Clean up stale feedback file for this branch (unless it's approved)
             if title:
                 branch_name = f"feature/{title}"
                 feedback_path = self._feedback_path(branch_name)
                 if os.path.exists(feedback_path):
-                    os.remove(feedback_path)
-                    activity(f"CLEANUP stale feedback: {os.path.basename(feedback_path)}")
+                    # Don't delete approved feedback — let service_recovery complete the merge
+                    try:
+                        with open(feedback_path) as f:
+                            approved = any(
+                                re.search(r'\bAPPROVED\b', line.strip(), re.IGNORECASE)
+                                for line in [f.readline() for _ in range(5)]
+                            )
+                    except OSError:
+                        approved = False
+
+                    if not approved:
+                        os.remove(feedback_path)
+                        activity(f"CLEANUP stale feedback: {os.path.basename(feedback_path)}")
 
             os.rename(path, original)
             activity(f"RECOVERED orphaned spec: {os.path.basename(original)}")
@@ -1628,8 +1639,12 @@ class StationManager:
         else:
             activity("SERVICE restart skipped (no deployment method configured)")
 
-        if train.spec_path and os.path.exists(train.spec_path + ".in_progress"):
-            os.remove(train.spec_path + ".in_progress")
+        # Remove both .in_progress and original spec file to prevent duplicate runs
+        if train.spec_path:
+            if os.path.exists(train.spec_path + ".in_progress"):
+                os.remove(train.spec_path + ".in_progress")
+            if os.path.exists(train.spec_path):
+                os.remove(train.spec_path)
 
         if os.path.exists(feedback_path):
             os.remove(feedback_path)
