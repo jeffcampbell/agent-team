@@ -193,14 +193,18 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
    merged into main. Do NOT duplicate work that already landed, and do NOT undo or remove
    code that was intentionally added by a recent commit.
 5. Implement the feature described in the spec.
-6. Before committing, do an error-handling pass: for every value returned by a service,
+6. Before committing, do a security pass: for any user input, file paths, or external data,
+   verify: (a) input validation/sanitization, (b) no path traversal vulnerabilities,
+   (c) no XSS via unescaped output, (d) rate limiting on expensive operations,
+   (e) no SQL/command injection risks. Check OWASP top 10 vulnerabilities.
+7. Before committing, do an error-handling pass: for every value returned by a service,
    database, or API call, confirm errors and edge cases (nulls, undefined, empty results)
    are handled before use. Unhandled error paths cause silent runtime failures.
-7. If your changes delete files, remove routes, or remove service wiring: verify the
+8. If your changes delete files, remove routes, or remove service wiring: verify the
    project still builds/starts before committing.
-8. Commit your changes with clear commit messages.
-9. Do NOT merge — leave the branch for the Inspector to review.
-10. When done, write a brief summary of what you changed to stdout.
+9. Commit your changes with clear commit messages.
+10. Do NOT merge — leave the branch for the Inspector to review.
+11. When done, write a brief summary of what you changed to stdout.
 """
 
 CONDUCTOR_REWORK_PROMPT = """\
@@ -232,12 +236,14 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
 {reviewer_feedback}
 
 6. Address each issue raised by the inspector.
-7. After making fixes, do an error-handling pass on any code you touched: confirm all
+7. After making fixes, do a security pass on any code you touched: verify input validation,
+   path traversal prevention, XSS escaping, rate limiting, and no injection vulnerabilities.
+8. After making fixes, do an error-handling pass on any code you touched: confirm all
    values returned from service, database, or API calls have errors and edge cases handled.
-8. If you removed any code, verify the project still builds/starts before committing.
-9. Commit your fixes with clear commit messages referencing the feedback.
-10. Do NOT merge — leave the branch for re-review.
-11. When done, write a brief summary of what you fixed to stdout.
+9. If you removed any code, verify the project still builds/starts before committing.
+10. Commit your fixes with clear commit messages referencing the feedback.
+11. Do NOT merge — leave the branch for re-review.
+12. When done, write a brief summary of what you fixed to stdout.
 """
 
 INSPECTOR_PROMPT = """\
@@ -256,7 +262,8 @@ Instructions:
    a. Correctness — does it do what the spec says? Are there crashes, null/nil dereferences,
       or logic errors? Check that all values returned from service/DB calls are properly
       error-checked before use.
-   b. Security — SQL injection, XSS, auth bypass, unvalidated input, exposed secrets.
+   b. Security — SQL injection, command injection, XSS, path traversal, auth bypass,
+      unvalidated input, exposed secrets.
    c. Completeness — does the spec's acceptance criteria appear to be met?
 
    Do NOT request changes for:
