@@ -123,6 +123,9 @@ Do not build any status page UI, APIs, or data models.
 
 The project you are managing is located at: {working_dir}
 
+Context — project guidelines (CLAUDE.md):
+{claude_md}
+
 Context — recent git commits (most recent first):
 {git_history}
 
@@ -253,7 +256,7 @@ Instructions:
    a. Correctness — does it do what the spec says? Are there crashes, null/nil dereferences,
       or logic errors? Check that all values returned from service/DB calls are properly
       error-checked before use.
-   b. Security — SQL injection, auth bypass, unvalidated input, exposed secrets.
+   b. Security — SQL injection, XSS, auth bypass, unvalidated input, exposed secrets.
    c. Completeness — does the spec's acceptance criteria appear to be met?
 
    Do NOT request changes for:
