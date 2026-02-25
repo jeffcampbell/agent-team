@@ -1015,14 +1015,25 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
-        # Include recent git history so dispatcher knows what was recently deployed
-        git_history = self._git("log", "--oneline", "-8", cwd=default_dir) or "(no git history)"
+        # Include recent git history with timestamps so dispatcher can see recency and avoid duplicates
+        git_history = self._git("log", "--format=%h %ar %s", "-20", cwd=default_dir) or "(no git history)"
+        # Read target project's CLAUDE.md for project-specific guidelines
+        claude_md_path = os.path.join(default_dir, "CLAUDE.md")
+        if os.path.exists(claude_md_path):
+            try:
+                with open(claude_md_path, "r") as f:
+                    claude_md = f.read()
+            except OSError:
+                claude_md = "(CLAUDE.md exists but could not be read)"
+        else:
+            claude_md = "(no CLAUDE.md found — use your best judgment)"
         prompt = config.DISPATCHER_PROMPT.format(
             timestamp=ts,
             working_dir=default_dir,
             backlog_dir=config.BACKLOG_DIR,
             app_logs=app_logs,
             git_history=git_history,
+            claude_md=claude_md,
         )
         agent = self._launch_agent("dispatcher", prompt, cwd=default_dir)
         if agent is not None:
