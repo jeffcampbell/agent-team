@@ -367,7 +367,7 @@ class StationManager:
         if agent.poll():
             agent.save_log()
             rc = agent.proc.returncode if agent.proc else "?"
-            summary = agent.get_output()[:200].replace("\n", " ").strip()
+            summary = agent.get_output()[:280].replace("\n", " ").strip()
             activity(f"ARRIVED  [{agent.name}] rc={rc} — {summary or '(no output)'}")
             self.active_agents[name] = None
             # Set cooldown on non-zero exit with exponential backoff
@@ -760,7 +760,7 @@ class StationManager:
         if agent.poll():
             agent.save_log()
             rc = agent.proc.returncode if agent.proc else "?"
-            summary = agent.get_output()[:200].replace("\n", " ").strip()
+            summary = agent.get_output()[:280].replace("\n", " ").strip()
             activity(f"ARRIVED  [{role}:{train.train_id}] rc={rc} — {summary or '(no output)'}")
             if role == "conductor":
                 train.conductor = None
@@ -1544,11 +1544,12 @@ class StationManager:
 
         try:
             with open(feedback_path) as f:
-                first_line = f.readline().strip()
+                # Check first 5 lines for APPROVED (inspector may add markdown headers)
+                approved = any(line.strip() == "APPROVED" for line in [f.readline() for _ in range(5)])
         except OSError:
             return
 
-        if first_line != "APPROVED":
+        if not approved:
             return
 
         repo_dir = train.repo_dir or train.working_dir
