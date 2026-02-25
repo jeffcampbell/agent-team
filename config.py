@@ -123,10 +123,16 @@ Do not build any status page UI, APIs, or data models.
 
 The project you are managing is located at: {working_dir}
 
+Context — recent git commits (most recent first):
+{git_history}
+
 Context — recent application logs:
 {app_logs}
 
-Use these logs to inform your decision. Look for:
+Use git history to see what was recently merged. Avoid creating specs that duplicate
+or closely iterate on features that merged in the last hour. Prefer fresh directions.
+
+Use app logs to inform your decision. Look for:
 - Gaps in functionality — what could the app do that it doesn't yet?
 - Which commands/features are used most frequently (inspiration for complementary features)
 - Recurring errors or friction points users hit

@@ -1015,11 +1015,14 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
+        # Include recent git history so dispatcher knows what was recently deployed
+        git_history = self._git("log", "--oneline", "-8", cwd=default_dir) or "(no git history)"
         prompt = config.DISPATCHER_PROMPT.format(
             timestamp=ts,
             working_dir=default_dir,
             backlog_dir=config.BACKLOG_DIR,
             app_logs=app_logs,
+            git_history=git_history,
         )
         agent = self._launch_agent("dispatcher", prompt, cwd=default_dir)
         if agent is not None:
@@ -1599,14 +1602,14 @@ class StationManager:
         if self._git_has_branch(train.branch, cwd=repo_dir):
             self._git("branch", "-D", train.branch, cwd=repo_dir)
 
-        if config.RAILWAY_PROJECT:
-            self._deploy_to_railway(cwd=repo_dir)
-        elif config.SERVICE_RESTART_CMD:
+        if config.SERVICE_RESTART_CMD:
             rc = os.system(config.SERVICE_RESTART_CMD)
             if rc == 0:
                 activity("SERVICE restarted successfully")
             else:
                 activity(f"SERVICE restart failed (rc={rc})")
+        elif config.RAILWAY_PROJECT:
+            self._deploy_to_railway(cwd=repo_dir)
         else:
             activity("SERVICE restart skipped (no deployment method configured)")
 
@@ -1720,9 +1723,6 @@ class StationManager:
 
                 # Sleep mode check
                 if time.time() < self.sleep_until:
-                    remaining = int(self.sleep_until - time.time())
-                    if remaining % 300 < config.TICK_INTERVAL:  # log every ~5 min
-                        activity(f"SERVICE SUSPENDED — {remaining}s remaining (fare limit)")
                     time.sleep(config.TICK_INTERVAL)
                     continue
 
