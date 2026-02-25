@@ -1015,8 +1015,8 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
-        # Include recent git history with timestamps so dispatcher can see recency and avoid duplicates
-        git_history = self._git("log", "--format=%h %ar %s", "-20", cwd=default_dir) or "(no git history)"
+        # Include recent git history (last 90 min) so dispatcher can see what merged recently
+        git_history = self._git("log", "--format=%h %ar %s", "--since=90 minutes ago", cwd=default_dir) or "(no git history)"
         # Read target project's CLAUDE.md for project-specific guidelines
         claude_md_path = os.path.join(default_dir, "CLAUDE.md")
         if os.path.exists(claude_md_path):
