@@ -1707,6 +1707,33 @@ class StationManager:
 
         train.reset_pipeline()
 
+    def _cleanup_orphaned_approved_work(self):
+        """Merge approved branches that were orphaned by spec deletion during restart."""
+        for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
+            try:
+                with open(feedback_file) as f:
+                    if not any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(5)]):
+                        continue
+            except OSError:
+                continue
+            basename = os.path.basename(feedback_file)
+            branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
+            repo_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+            if not self._git_has_branch(branch, cwd=repo_dir):
+                os.remove(feedback_file)
+                activity(f"CLEANUP orphaned feedback: {basename} (branch gone)")
+                continue
+            activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
+            merge_proc = subprocess.run(["git", "merge", "--no-ff", "-X", "theirs", branch],
+                                      capture_output=True, text=True, cwd=repo_dir)
+            if merge_proc.returncode == 0:
+                activity(f"MERGE [orphan] — {merge_proc.stdout.strip() or 'ok'}")
+                self._git("branch", "-D", branch, cwd=repo_dir)
+                os.remove(feedback_file)
+            else:
+                activity(f"MERGE [orphan] — FAILED: {merge_proc.stderr.strip()}")
+                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_dir)
+
     def _log_ops_summary(self, output: str):
         """Extract and log the ops agent's activity summary with visual breakers."""
         if not output or not output.strip():
@@ -1835,6 +1862,7 @@ class StationManager:
                 self._check_signal_health()             # file spec if Signal is stuck
                 self._phase_dispatcher()
                 self._phase_ops()
+                self._cleanup_orphaned_approved_work()  # merge approved branches orphaned by restarts
 
                 # Tick summary
                 active = [n for n, a in self.active_agents.items() if a is not None]
