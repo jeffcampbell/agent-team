@@ -319,67 +319,85 @@
   .line-ops      { color: #888; }
   .line-default  { color: #666; }
 
-  /* ── E-Ink Display Preview ── */
-  .eink-section {
+  /* ── Game Preview ── */
+  .game-section {
     padding: 0 24px 16px;
     display: flex; justify-content: center;
   }
-  .eink-card {
+  .game-card {
     background: #0c0c0c;
     border: 1px solid #2a2a2a;
     border-radius: 4px;
     width: 100%;
-    max-width: 440px;
+    max-width: 540px;
     overflow: hidden;
   }
-  .eink-header {
+  .game-header {
     background: linear-gradient(135deg, #0d1a0d 0%, #1a2a1a 50%, #0d1a0d 100%);
     border-bottom: 1px solid #2a4a2a44;
     padding: 10px 14px 8px;
     display: flex; align-items: baseline; justify-content: space-between;
   }
-  .eink-title {
+  .game-title {
     font-size: 0.9rem; font-weight: 800;
     letter-spacing: 4px; color: #9acd32;
     text-transform: uppercase;
   }
-  .eink-meta {
-    font-size: 0.55rem; color: #4a6a2a;
+  .game-date {
+    font-size: 0.65rem; color: #4a6a2a;
     letter-spacing: 1px;
-  }
-  .eink-body {
-    padding: 14px;
-    display: flex; flex-direction: column; align-items: center; gap: 8px;
-  }
-  .eink-frame {
-    background: #fff;
-    border: 2px solid #333;
-    border-radius: 2px;
-    padding: 4px;
-    display: inline-block;
-    line-height: 0;
-  }
-  .eink-frame img {
-    width: 250px; height: 122px;
-    image-rendering: pixelated;
-  }
-  .eink-info {
-    font-size: 0.72rem; color: #666;
-    text-align: center;
-  }
-  .eink-app-title {
-    font-size: 0.78rem; color: #ccc;
     font-weight: 600;
   }
-  .eink-error {
-    font-size: 0.72rem; color: #e81123;
+  .game-body {
+    padding: 14px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .game-iframe-wrap {
+    background: #000;
+    border: 2px solid #333;
+    border-radius: 3px;
+    width: 512px;
+    height: 512px;
+    overflow: hidden;
+    position: relative;
+  }
+  .game-iframe-wrap iframe {
+    width: 512px;
+    height: 512px;
+    border: none;
+    display: block;
+  }
+  .game-assessment {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 3px;
+    padding: 10px;
+    max-height: 140px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: #999;
+    white-space: pre-wrap;
+    width: 100%;
+  }
+  .game-assessment-label {
+    font-size: 0.65rem;
+    color: #4a6a2a;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 2px;
+    align-self: flex-start;
+  }
+  .game-error {
+    font-size: 0.78rem; color: #666;
+    text-align: center;
+    padding: 40px 20px;
     font-style: italic;
   }
-  .eink-placeholder {
-    width: 250px; height: 122px;
-    background: #1a1a1a;
-    display: flex; align-items: center; justify-content: center;
-    color: #444; font-size: 0.78rem;
+  .game-controls-hint {
+    font-size: 0.6rem; color: #555;
+    text-align: center;
+    letter-spacing: 1px;
   }
 
   .config-section { padding: 0 24px 24px; }
@@ -507,21 +525,15 @@
 <div class="agents-grid" id="agentsGrid"></div>
 <div class="stats-bar" id="statsBar"></div>
 
-<!-- E-Ink Display Preview -->
-<div class="eink-section">
-  <div class="eink-card">
-    <div class="eink-header">
-      <span class="eink-title">Display</span>
-      <span class="eink-meta" id="einkMeta">raspi-eink</span>
+<!-- Game Preview -->
+<div class="game-section">
+  <div class="game-card">
+    <div class="game-header">
+      <span class="game-title">Game</span>
+      <span class="game-date" id="gameDate"></span>
     </div>
-    <div class="eink-body">
-      <div class="eink-frame">
-        <div class="eink-placeholder" id="einkPlaceholder">Loading preview...</div>
-        <img id="einkImg" style="display:none" alt="E-Ink Display">
-      </div>
-      <div class="eink-app-title" id="einkAppTitle"></div>
-      <div class="eink-info" id="einkInfo"></div>
-      <div class="eink-error" id="einkError"></div>
+    <div class="game-body" id="gameBody">
+      <div class="game-error">Loading...</div>
     </div>
   </div>
 </div>
@@ -1103,36 +1115,57 @@ function refresh() {
     });
 }
 
-function refreshEink() {
-  fetch('/api/eink-preview')
+function escapeHtml(str) {
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(str));
+  return d.innerHTML;
+}
+
+var gameLoaded = false;
+function refreshGame() {
+  fetch('/api/game-preview')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var img = document.getElementById('einkImg');
-      var placeholder = document.getElementById('einkPlaceholder');
-      var title = document.getElementById('einkAppTitle');
-      var info = document.getElementById('einkInfo');
-      var error = document.getElementById('einkError');
-      var meta = document.getElementById('einkMeta');
+      var dateEl = document.getElementById('gameDate');
+      var body = document.getElementById('gameBody');
+      dateEl.textContent = data.date || '';
 
-      if (data.png_base64) {
-        img.src = 'data:image/png;base64,' + data.png_base64;
-        img.style.display = '';
-        placeholder.style.display = 'none';
-        title.textContent = data.title || '';
-        var parts = [];
-        if (data.update_interval) parts.push('refresh: ' + fmtDuration(data.update_interval));
-        if (data.updated_ago != null) parts.push('fetched ' + fmtDuration(data.updated_ago) + ' ago');
-        info.textContent = parts.join(' · ');
-        error.textContent = '';
-        meta.textContent = 'raspi-eink';
+      if (data.error) {
+        body.innerHTML = '<div class="game-error">' + escapeHtml(data.error) + '</div>';
+        gameLoaded = false;
+        return;
+      }
+
+      if (data.playable && !gameLoaded) {
+        var html = '';
+        html += '<div class="game-iframe-wrap">';
+        html += '<iframe src="/game/game.html" allowfullscreen></iframe>';
+        html += '</div>';
+        html += '<div class="game-controls-hint">ARROWS: move &middot; Z: action &middot; X: alt &middot; ENTER: pause</div>';
+        if (data.assessment) {
+          html += '<div class="game-assessment-label">Assessment</div>';
+          html += '<div class="game-assessment">' + escapeHtml(data.assessment) + '</div>';
+        }
+        body.innerHTML = html;
+        gameLoaded = true;
+      } else if (data.playable && gameLoaded) {
+        // Update assessment without reloading iframe
+        var existing = body.querySelector('.game-assessment');
+        if (data.assessment && existing) {
+          existing.textContent = data.assessment;
+        } else if (data.assessment && !existing) {
+          var label = document.createElement('div');
+          label.className = 'game-assessment-label';
+          label.textContent = 'Assessment';
+          body.appendChild(label);
+          var assess = document.createElement('div');
+          assess.className = 'game-assessment';
+          assess.textContent = data.assessment;
+          body.appendChild(assess);
+        }
       } else {
-        img.style.display = 'none';
-        placeholder.style.display = 'flex';
-        placeholder.textContent = 'No preview';
-        title.textContent = '';
-        info.textContent = '';
-        error.textContent = data.error || '';
-        meta.textContent = 'offline';
+        body.innerHTML = '<div class="game-error">Game built but not yet exported to HTML</div>';
+        gameLoaded = false;
       }
     })
     .catch(function() {});
@@ -1142,8 +1175,8 @@ updateClock();
 setInterval(updateClock, 1000);
 refresh();
 setInterval(refresh, REFRESH_MS);
-refreshEink();
-setInterval(refreshEink, 30000);
+refreshGame();
+setInterval(refreshGame, 30000);
 </script>
 </body>
 </html>

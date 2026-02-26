@@ -920,11 +920,12 @@ class StationManager:
         if primary:
             return primary[0]
 
-        # Fallback: regular trains can pick low specs; express never picks high
+        # Fallback: regular trains can pick medium then low specs; express never picks high
         if train.train_type == "regular":
-            fallback = self._backlog_specs(complexity="low")
-            if fallback:
-                return fallback[0]
+            for fallback_complexity in ("medium", "low"):
+                fallback = self._backlog_specs(complexity=fallback_complexity)
+                if fallback:
+                    return fallback[0]
 
         return None
 
