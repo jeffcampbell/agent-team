@@ -1729,6 +1729,14 @@ class StationManager:
             if branch in active_inspector_branches:
                 continue
 
+            # Skip if feedback file is recent — likely from active inspector, not a true orphan
+            try:
+                file_age = time.time() - os.path.getmtime(feedback_file)
+                if file_age < 300:  # 5 minutes — orphans from restarts would be older
+                    continue
+            except OSError:
+                continue
+
             repo_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
             if not self._git_has_branch(branch, cwd=repo_dir):
                 os.remove(feedback_file)
