@@ -1142,8 +1142,16 @@ class StationManager:
                     pass
 
             if has_changes_requested:
-                # Don't create worktree or route to inspector — let _train_phase_rework handle it
-                activity(f"Conductor:{train.train_id} — branch {branch_name} has CHANGES_REQUESTED feedback, skipping orphan recovery (rework will handle)")
+                # Create worktree so _train_phase_rework can launch conductor
+                activity(f"Conductor:{train.train_id} — branch {branch_name} has CHANGES_REQUESTED feedback, preparing for rework")
+                try:
+                    worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
+                except RuntimeError as e:
+                    activity(f"RESTRICTED [{train.train_id}] — worktree creation failed: {e}")
+                    train.reset_pipeline()
+                    return
+                train.working_dir = worktree_path
+                os.rename(spec_path, spec_path + ".in_progress")
                 return
 
             # No feedback or approved feedback — route to inspector for orphan recovery
