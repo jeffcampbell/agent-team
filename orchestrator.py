@@ -305,22 +305,27 @@ class StationManager:
                                 shutil.rmtree(wt_path, ignore_errors=True)
                             activity(f"CLEANUP stale worktree: {wt_path}")
 
-            # Clean up stale feedback file for this branch (unless it's approved)
+            # Clean up stale feedback file for this branch (unless it's approved or has changes requested)
             if title:
                 branch_name = f"feature/{title}"
                 feedback_path = self._feedback_path(branch_name)
                 if os.path.exists(feedback_path):
-                    # Don't delete approved feedback — let service_recovery complete the merge
+                    # Don't delete approved or changes_requested feedback — let workflow phases handle them
                     try:
                         with open(feedback_path) as f:
+                            first_5_lines = [f.readline() for _ in range(5)]
                             approved = any(
                                 re.search(r'\bAPPROVED\b', line.strip(), re.IGNORECASE)
-                                for line in [f.readline() for _ in range(5)]
+                                for line in first_5_lines
+                            )
+                            changes_requested = any(
+                                re.search(r'\bCHANGES_REQUESTED\b', line.strip(), re.IGNORECASE)
+                                for line in first_5_lines
                             )
                     except OSError:
-                        approved = False
+                        approved = changes_requested = False
 
-                    if not approved:
+                    if not approved and not changes_requested:
                         os.remove(feedback_path)
                         activity(f"CLEANUP stale feedback: {os.path.basename(feedback_path)}")
 
@@ -1029,6 +1034,13 @@ class StationManager:
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
         # Include recent git history (last 90 min) so dispatcher can see what merged recently
         git_history = self._git("log", "--format=%h %ar %s", "--since=90 minutes ago", cwd=default_dir) or "(no git history)"
+        # Check if today's game already exists
+        today_date = time.strftime("%Y-%m-%d")
+        today_game_dir = os.path.join(default_dir, "games", today_date)
+        if os.path.isdir(today_game_dir):
+            today_status = f"TODAY'S GAME EXISTS at games/{today_date}/. You MUST create an improvement spec for the existing game, NOT a new game concept."
+        else:
+            today_status = f"No game exists yet for {today_date}. You should create a NEW game concept."
         # Read target project's CLAUDE.md for project-specific guidelines
         claude_md_path = os.path.join(default_dir, "CLAUDE.md")
         if os.path.exists(claude_md_path):
@@ -1043,6 +1055,7 @@ class StationManager:
             timestamp=ts,
             working_dir=default_dir,
             backlog_dir=config.BACKLOG_DIR,
+            today_status=today_status,
             app_logs=app_logs,
             git_history=git_history,
             claude_md=claude_md,
@@ -1123,7 +1136,22 @@ class StationManager:
 
         # If the feature branch already exists with changes, skip Conductor → inspector
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
-            activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
+            # Check if inspector already requested changes - if so, defer to rework phase instead of re-inspecting
+            feedback_path = self._feedback_path(branch_name)
+            has_changes_requested = False
+            if os.path.exists(feedback_path):
+                try:
+                    with open(feedback_path) as f:
+                        first_line = f.readline().strip()
+                    has_changes_requested = (first_line == "CHANGES_REQUESTED")
+                except OSError:
+                    pass
+
+            if has_changes_requested:
+                activity(f"Conductor:{train.train_id} — branch {branch_name} has CHANGES_REQUESTED feedback, deferring to rework phase")
+            else:
+                activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
+
             try:
                 worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
             except RuntimeError as e:
