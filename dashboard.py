@@ -398,6 +398,9 @@ def _make_handler(station_manager):
                 if os.path.isfile(filepath):
                     with open(filepath, "rb") as f:
                         data = f.read()
+                    # Patch HTML to auto-play in dashboard embed
+                    if filename == "game.html":
+                        data = data.replace(b"p8_autoplay = false", b"p8_autoplay = true")
                     ctype = "text/html; charset=utf-8" if filename == "game.html" else "application/javascript"
                     self.send_response(200)
                     self.send_header("Content-Type", ctype)
