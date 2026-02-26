@@ -61,8 +61,8 @@ SERVICE_RESTART_CMD = os.environ.get("AGENT_TEAM_SERVICE_RESTART_CMD", "")
 # ─── Railway deployment (alternative to SERVICE_RESTART_CMD) ──────────────────
 RAILWAY_PROJECT = os.environ.get("AGENT_TEAM_RAILWAY_PROJECT", "")
 RAILWAY_SERVICE = os.environ.get("AGENT_TEAM_RAILWAY_SERVICE", "")
-RAILWAY_STAGING_ENV = os.environ.get("AGENT_TEAM_RAILWAY_STAGING_ENV", "staging")
-RAILWAY_PRODUCTION_ENV = os.environ.get("AGENT_TEAM_RAILWAY_PRODUCTION_ENV", "production")
+RAILWAY_STAGING_ENV = os.environ.get("AGENT_TEAM_RAILWAY_STAGING_ENV", "")
+RAILWAY_PRODUCTION_ENV = os.environ.get("AGENT_TEAM_RAILWAY_PRODUCTION_ENV", "")
 RAILWAY_LOG_TIMEOUT = 8  # seconds to capture streaming railway logs
 
 # ─── Git ─────────────────────────────────────────────────────────────────────
@@ -117,6 +117,9 @@ Your job is to improve the game-a-day project, not the orchestrator.
 
 The project is located at: {working_dir}
 
+Context — today's game status:
+{today_status}
+
 Context — project guidelines (CLAUDE.md):
 {claude_md}
 
@@ -127,7 +130,7 @@ Context — tester assessment (if available):
 {app_logs}
 
 Instructions:
-1. Determine today's date. Check if `games/YYYY-MM-DD/` exists in {working_dir}.
+1. Review the "today's game status" context above to see if today's game already exists.
 
 2. If today's game directory does NOT exist yet:
    - Generate a fresh game concept. Think of a fun, self-contained game that can be built
