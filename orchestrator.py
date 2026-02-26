@@ -1712,7 +1712,7 @@ class StationManager:
         for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
             try:
                 with open(feedback_file) as f:
-                    if not any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(5)]):
+                    if not any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
                         continue
             except OSError:
                 continue
