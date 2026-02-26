@@ -1751,6 +1751,12 @@ class StationManager:
         if "ops" in self.agent_cooldowns and time.time() < self.agent_cooldowns["ops"]:
             return
 
+        # Skip if minimum interval not elapsed (prevents throttle log spam)
+        min_interval = config.AGENT_MIN_INTERVALS.get("ops", 3600)
+        last_launch = self.last_launch_times.get("ops", 0)
+        if time.time() - last_launch < min_interval:
+            return
+
         activity_tail, git_log = self._gather_ops_context()
         prompt = config.OPS_PROMPT.format(
             base_dir=config.BASE_DIR,
