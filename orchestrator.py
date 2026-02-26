@@ -313,15 +313,9 @@ class StationManager:
                     # Don't delete approved or changes_requested feedback — let workflow phases handle them
                     try:
                         with open(feedback_path) as f:
-                            first_5_lines = [f.readline() for _ in range(5)]
-                            approved = any(
-                                re.search(r'\bAPPROVED\b', line.strip(), re.IGNORECASE)
-                                for line in first_5_lines
-                            )
-                            changes_requested = any(
-                                re.search(r'\bCHANGES_REQUESTED\b', line.strip(), re.IGNORECASE)
-                                for line in first_5_lines
-                            )
+                            content = f.read()
+                            approved = bool(re.search(r'\bAPPROVED\b', content, re.IGNORECASE))
+                            changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
                     except OSError:
                         approved = changes_requested = False
 
@@ -1134,23 +1128,29 @@ class StationManager:
         train.rework_count = 0
         train.spec_timeout_count = 0
 
-        # If the feature branch already exists with changes, skip Conductor → inspector
+        # If the feature branch already exists with changes, check if inspector already gave feedback
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
-            # Check if inspector already requested changes - if so, defer to rework phase instead of re-inspecting
+            # Check if inspector already requested changes - use same logic as cleanup (first 5 lines, regex)
             feedback_path = self._feedback_path(branch_name)
             has_changes_requested = False
             if os.path.exists(feedback_path):
                 try:
                     with open(feedback_path) as f:
-                        first_line = f.readline().strip()
-                    has_changes_requested = (first_line == "CHANGES_REQUESTED")
+                        first_5_lines = [f.readline() for _ in range(5)]
+                    has_changes_requested = any(
+                        re.search(r'\bCHANGES_REQUESTED\b', line.strip(), re.IGNORECASE)
+                        for line in first_5_lines
+                    )
                 except OSError:
                     pass
 
             if has_changes_requested:
-                activity(f"Conductor:{train.train_id} — branch {branch_name} has CHANGES_REQUESTED feedback, deferring to rework phase")
-            else:
-                activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
+                # Don't create worktree or route to inspector — let _train_phase_rework handle it
+                activity(f"Conductor:{train.train_id} — branch {branch_name} has CHANGES_REQUESTED feedback, skipping orphan recovery (rework will handle)")
+                return
+
+            # No feedback or approved feedback — route to inspector for orphan recovery
+            activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
 
             try:
                 worktree_path = self._create_worktree(working_dir, branch_name, train.train_id)
