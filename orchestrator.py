@@ -1130,17 +1130,14 @@ class StationManager:
 
         # If the feature branch already exists with changes, check if inspector already gave feedback
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
-            # Check if inspector already requested changes - use same logic as cleanup (first 5 lines, regex)
+            # Check if inspector already requested changes - read entire file to handle markdown formatting
             feedback_path = self._feedback_path(branch_name)
             has_changes_requested = False
             if os.path.exists(feedback_path):
                 try:
                     with open(feedback_path) as f:
-                        first_5_lines = [f.readline() for _ in range(5)]
-                    has_changes_requested = any(
-                        re.search(r'\bCHANGES_REQUESTED\b', line.strip(), re.IGNORECASE)
-                        for line in first_5_lines
-                    )
+                        content = f.read()
+                    has_changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
                 except OSError:
                     pass
 
