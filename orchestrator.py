@@ -292,8 +292,30 @@ class StationManager:
                 working_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
             title = spec_data.get("title", "")
 
+            # Check if this spec has active CHANGES_REQUESTED or APPROVED feedback
+            has_changes_requested = False
+            has_approved = False
+            if title:
+                branch_name = f"feature/{title}"
+                feedback_path = self._feedback_path(branch_name)
+                if os.path.exists(feedback_path):
+                    try:
+                        with open(feedback_path) as f:
+                            content = f.read()
+                            has_changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
+                            has_approved = bool(re.search(r'\bAPPROVED\b', content, re.IGNORECASE))
+                    except OSError:
+                        pass
+
+            # If approved, delete the spec (work is complete) — don't recover it back into pipeline
+            if has_approved:
+                os.remove(path)
+                activity(f"DELETED completed spec: {os.path.basename(original)}")
+                continue
+
             # Clean up stale worktrees for all trains in this project
-            if os.path.isdir(working_dir):
+            # Skip cleanup if there's active CHANGES_REQUESTED feedback — worktree is legitimately set up for rework
+            if not has_changes_requested and os.path.isdir(working_dir):
                 worktree_base = os.path.join(working_dir, ".worktrees")
                 if os.path.isdir(worktree_base):
                     for entry in os.listdir(worktree_base):
@@ -1264,10 +1286,10 @@ class StationManager:
 
         try:
             with open(feedback_path) as f:
-                first_line = f.readline().strip()
-                if first_line != "CHANGES_REQUESTED":
+                reviewer_feedback = f.read()
+                # Check for CHANGES_REQUESTED anywhere in the file to handle markdown formatting
+                if not re.search(r'\bCHANGES_REQUESTED\b', reviewer_feedback, re.IGNORECASE):
                     return
-                reviewer_feedback = first_line + "\n" + f.read()
         except OSError:
             return
 
@@ -1744,18 +1766,9 @@ class StationManager:
     def run(self):
         activity("=" * 60)
         activity("YAMANOTE LINE OPEN")
-        activity(f"  Tick interval: {config.TICK_INTERVAL}s")
-        activity(f"  Backlog: {config.BACKLOG_DIR}")
-        activity(f"  Activity log: {config.ACTIVITY_LOG}")
-        activity(f"  Agent timeout: {config.AGENT_TIMEOUT_SECONDS}s")
-        activity(f"  Fare limit: {config.MAX_AGENT_LAUNCHES_PER_HOUR} launches/hr")
-        activity(f"  Entropy threshold: {config.ENTROPY_FIX_COMMIT_THRESHOLD} fix commits")
         activity(f"  Trains: {len(self.trains)}")
         for train in self.trains:
-            activity(f"    {train.train_id}: type={train.train_type} complexity={train.complexity} conductor={train.conductor_model} inspector={train.inspector_model}")
-        for agent_name, model in config.AGENT_MODELS.items():
-            interval = config.AGENT_MIN_INTERVALS.get(agent_name, 0)
-            activity(f"  {agent_name}: model={model}  min_interval={interval}s")
+            activity(f"    {train.train_id}: type={train.train_type} complexity={train.complexity}")
         activity("=" * 60)
 
         last_tick_time = time.time()
