@@ -1509,7 +1509,7 @@ class StationManager:
         """If branch has too many fix/update commits, fire Conductor and restart."""
         branch = train.branch
         cwd = train.working_dir
-        if not branch or not cwd:
+        if not branch or not cwd or not os.path.isdir(cwd):
             return
         if not self._git_has_branch(branch, cwd=cwd):
             return
