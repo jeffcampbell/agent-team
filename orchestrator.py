@@ -1709,6 +1709,12 @@ class StationManager:
 
     def _cleanup_orphaned_approved_work(self):
         """Merge approved branches that were orphaned by spec deletion during restart."""
+        # Build set of branches with active inspectors to avoid racing with normal flow
+        active_inspector_branches = {
+            train.branch for train in self.trains
+            if train.inspector is not None and train.branch
+        }
+
         for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
             try:
                 with open(feedback_file) as f:
@@ -1718,6 +1724,11 @@ class StationManager:
                 continue
             basename = os.path.basename(feedback_file)
             branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
+
+            # Skip if inspector is actively working on this branch
+            if branch in active_inspector_branches:
+                continue
+
             repo_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
             if not self._git_has_branch(branch, cwd=repo_dir):
                 os.remove(feedback_file)
