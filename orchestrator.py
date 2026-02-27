@@ -1904,7 +1904,13 @@ class StationManager:
                         and not os.path.exists(self._feedback_path(t.branch))
                         for t in self.trains
                     )
-                    if not conducting and not waiting_for_inspector:
+                    # Also check if any inspector is currently running
+                    inspecting = any(
+                        t.inspector is not None and t.inspector.proc is not None
+                        and t.inspector.proc.poll() is None
+                        for t in self.trains
+                    )
+                    if not conducting and not waiting_for_inspector and not inspecting:
                         self._request_self_restart()
 
                 # Global phases
