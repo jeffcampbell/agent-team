@@ -1712,7 +1712,9 @@ class StationManager:
                 if result.returncode == 0:
                     activity("SERVICE restarted successfully")
                 else:
-                    error_msg = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+                    # Extract first line only to avoid multi-line error output cluttering the log
+                    error_output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+                    error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
                     activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
             except subprocess.TimeoutExpired:
                 activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
