@@ -1759,7 +1759,9 @@ class StationManager:
             merge_proc = subprocess.run(["git", "merge", "--no-ff", "-X", "theirs", branch],
                                       capture_output=True, text=True, cwd=repo_dir)
             if merge_proc.returncode == 0:
-                activity(f"MERGE [orphan] — {merge_proc.stdout.strip() or 'ok'}")
+                # Extract first line only to avoid multi-line file stats cluttering the log
+                merge_summary = (merge_proc.stdout.strip().split('\n')[0] if merge_proc.stdout.strip() else 'ok')
+                activity(f"MERGE [orphan] — {merge_summary}")
                 self.last_merge_time = time.time()
                 self._git("branch", "-D", branch, cwd=repo_dir)
                 os.remove(feedback_file)
