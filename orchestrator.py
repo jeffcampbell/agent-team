@@ -1805,13 +1805,15 @@ class StationManager:
             current_head = self._git_last_commit(cwd=config.BASE_DIR)
             if current_head != self._ops_head_before:
                 self._ops_head_before = None
-                conducting = any(
-                    t.conductor is not None and t.conductor.proc is not None
-                    and t.conductor.proc.poll() is None
+                conducting_or_inspecting = any(
+                    (t.conductor is not None and t.conductor.proc is not None
+                     and t.conductor.proc.poll() is None) or
+                    (t.inspector is not None and t.inspector.proc is not None
+                     and t.inspector.proc.poll() is None)
                     for t in self.trains
                 )
-                if conducting:
-                    activity("OPS RESTART deferred — conductor is mid-run, will restart when it finishes")
+                if conducting_or_inspecting:
+                    activity("OPS RESTART deferred — conductor/inspector is mid-run, will restart when it finishes")
                     self.restart_pending = True
                 else:
                     self._request_self_restart()
