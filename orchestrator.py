@@ -1701,17 +1701,21 @@ class StationManager:
             self._git("branch", "-D", train.branch, cwd=repo_dir)
 
         if config.SERVICE_RESTART_CMD:
-            result = subprocess.run(
-                config.SERVICE_RESTART_CMD,
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                activity("SERVICE restarted successfully")
-            else:
-                error_msg = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
-                activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
+            try:
+                result = subprocess.run(
+                    config.SERVICE_RESTART_CMD,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=config.SERVICE_RESTART_TIMEOUT
+                )
+                if result.returncode == 0:
+                    activity("SERVICE restarted successfully")
+                else:
+                    error_msg = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+                    activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
+            except subprocess.TimeoutExpired:
+                activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
         elif config.RAILWAY_PROJECT:
             self._deploy_to_railway(cwd=repo_dir)
         else:

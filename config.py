@@ -16,6 +16,7 @@ DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "")
 
 TICK_INTERVAL = 10  # seconds between orchestration ticks
 AGENT_TIMEOUT_SECONDS = 1200  # max runtime per agent subprocess (20 minutes)
+SERVICE_RESTART_TIMEOUT = 120  # max time for service restart/deploy (2 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
