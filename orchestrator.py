@@ -1050,7 +1050,7 @@ class StationManager:
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
         # Include recent git history (last 90 min) so dispatcher can see what merged recently
         git_history = self._git("log", "--format=%h %ar %s", "--since=90 minutes ago", cwd=default_dir) or "(no git history)"
-        # Check if a merge just happened (within last 3 minutes)
+        # Check if a merge just happened (within last 60 minutes)
         recent_merge_warning = ""
         recent_commit = self._git("log", "-1", "--format=%ct %s", cwd=default_dir)
         if recent_commit:
@@ -1059,7 +1059,7 @@ class StationManager:
                 commit_time, commit_msg = parts
                 try:
                     age_seconds = now - int(commit_time)
-                    if age_seconds < 180 and "Merge branch" in commit_msg:
+                    if age_seconds < 3600 and "Merge branch" in commit_msg:
                         recent_merge_warning = "\n\n⚠️ A feature branch was just merged. Before creating a spec, carefully verify that issues mentioned in assessment.md were NOT already addressed in the commits above. Do not duplicate work that was just completed."
                 except ValueError:
                     pass
