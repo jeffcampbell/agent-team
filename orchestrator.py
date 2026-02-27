@@ -1050,11 +1050,24 @@ class StationManager:
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
         # Include recent git history (last 90 min) so dispatcher can see what merged recently
         git_history = self._git("log", "--format=%h %ar %s", "--since=90 minutes ago", cwd=default_dir) or "(no git history)"
+        # Check if a merge just happened (within last 3 minutes)
+        recent_merge_warning = ""
+        recent_commit = self._git("log", "-1", "--format=%ct %s", cwd=default_dir)
+        if recent_commit:
+            parts = recent_commit.split(" ", 1)
+            if len(parts) == 2:
+                commit_time, commit_msg = parts
+                try:
+                    age_seconds = now - int(commit_time)
+                    if age_seconds < 180 and "Merge branch" in commit_msg:
+                        recent_merge_warning = "\n\n⚠️ A feature branch was just merged. Before creating a spec, carefully verify that issues mentioned in assessment.md were NOT already addressed in the commits above. Do not duplicate work that was just completed."
+                except ValueError:
+                    pass
         # Check if today's game already exists
         today_date = time.strftime("%Y-%m-%d")
         today_game_dir = os.path.join(default_dir, "games", today_date)
         if os.path.isdir(today_game_dir):
-            today_status = f"TODAY'S GAME EXISTS at games/{today_date}/. You MUST create an improvement spec for the existing game, NOT a new game concept."
+            today_status = f"TODAY'S GAME EXISTS at games/{today_date}/. You MUST create an improvement spec for the existing game, NOT a new game concept.{recent_merge_warning}"
         else:
             today_status = f"No game exists yet for {today_date}. You should create a NEW game concept."
         # Read target project's CLAUDE.md for project-specific guidelines
