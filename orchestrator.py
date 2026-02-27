@@ -885,9 +885,13 @@ class StationManager:
         if role == "conductor":
             train.conductor = None
             train.conductor_failures += 1
-            backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.conductor_failures), config.MAX_ERROR_BACKOFF)
-            train.conductor_cooldown_until = time.time() + backoff
-            activity(f"DELAY [{agent_name}] — overdue #{train.conductor_failures}, retry after {backoff}s")
+            # Skip cooldown/DELAY if this spec will be terminated (avoid misleading "retry" message)
+            will_terminate = (train.spec_path and
+                              train.spec_timeout_count + 1 >= config.MAX_SPEC_TIMEOUTS)
+            if not will_terminate:
+                backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.conductor_failures), config.MAX_ERROR_BACKOFF)
+                train.conductor_cooldown_until = time.time() + backoff
+                activity(f"DELAY [{agent_name}] — overdue #{train.conductor_failures}, retry after {backoff}s")
         else:
             train.inspector = None
             train.inspector_failures += 1
