@@ -1760,6 +1760,7 @@ class StationManager:
                                       capture_output=True, text=True, cwd=repo_dir)
             if merge_proc.returncode == 0:
                 activity(f"MERGE [orphan] — {merge_proc.stdout.strip() or 'ok'}")
+                self.last_merge_time = time.time()
                 self._git("branch", "-D", branch, cwd=repo_dir)
                 os.remove(feedback_file)
                 # Clean up any train worktrees for this branch to avoid inspector phase checking later
