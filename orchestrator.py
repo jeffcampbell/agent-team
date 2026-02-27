@@ -1127,7 +1127,10 @@ class StationManager:
             with open(spec_path) as f:
                 spec_data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
+            activity(f"INVALID SPEC — {os.path.basename(spec_path)} failed to parse: {e}")
             log.warning("Bad spec file %s: %s", spec_path, e)
+            # Remove malformed spec to prevent it from blocking the queue
+            os.remove(spec_path)
             return
 
         # Read working_dir from spec, default to configured project
