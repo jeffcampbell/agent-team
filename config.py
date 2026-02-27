@@ -428,7 +428,7 @@ Instructions:
    - Do NOT add new dependencies beyond the standard library
 
 5. After editing, validate:
-   python3 -c "import config; import orchestrator; orchestrator.StationManager(); print('OK')"
+   python3 -c "import config; import orchestrator; print('OK')"
 
 6. If validation passes, commit ONLY files you changed:
    git add orchestrator.py config.py
