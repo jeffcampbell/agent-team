@@ -1828,7 +1828,6 @@ class StationManager:
                 self._log_ops_summary(ops_agent.get_output())
             current_head = self._git_last_commit(cwd=config.BASE_DIR)
             if current_head != self._ops_head_before:
-                self._ops_head_before = None
                 conducting_or_inspecting = any(
                     (t.conductor is not None and t.conductor.proc is not None
                      and t.conductor.proc.poll() is None) or
