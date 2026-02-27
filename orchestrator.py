@@ -1864,14 +1864,20 @@ class StationManager:
                     self._train_phase_entropy_check(train)
                     self._train_phase_station_manager_check(train)
 
-                # Deferred ops restart — fire once all conductors have finished
+                # Deferred ops restart — fire once all conductors have finished AND inspectors launched
                 if self.restart_pending:
                     conducting = any(
                         t.conductor is not None and t.conductor.proc is not None
                         and t.conductor.proc.poll() is None
                         for t in self.trains
                     )
-                    if not conducting:
+                    # Wait for inspector launch on trains that just finished conductor
+                    waiting_for_inspector = any(
+                        t.branch and t.conductor is None and t.inspector is None
+                        and not os.path.exists(self._feedback_path(t.branch))
+                        for t in self.trains
+                    )
+                    if not conducting and not waiting_for_inspector:
                         self._request_self_restart()
 
                 # Global phases
