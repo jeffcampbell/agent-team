@@ -927,11 +927,7 @@ class StationManager:
                 # Clean up the feature branch so retry starts fresh (prevents orphan recovery confusion)
                 if train.branch and train.repo_dir and self._git_has_branch(train.branch, cwd=train.repo_dir):
                     self._git("branch", "-D", train.branch, cwd=train.repo_dir)
-                train.branch = None
-                train.spec_path = None
-                train.working_dir = None
-                train.repo_dir = None
-                train.file_edits.clear()
+                train.reset_pipeline()
 
     def _find_spec_for_train(self, train: Train) -> str | None:
         """Find a suitable spec for this train based on complexity.
