@@ -1749,6 +1749,15 @@ class StationManager:
                 activity(f"MERGE [orphan] — {merge_proc.stdout.strip() or 'ok'}")
                 self._git("branch", "-D", branch, cwd=repo_dir)
                 os.remove(feedback_file)
+                # Clean up any train worktrees for this branch to avoid inspector phase checking later
+                for train in self.trains:
+                    if train.branch == branch and train.working_dir:
+                        self._remove_worktree(train.repo_dir, train.working_dir)
+                        if train.spec_path:
+                            in_progress = train.spec_path + ".in_progress"
+                            if os.path.exists(in_progress):
+                                os.remove(in_progress)
+                        train.reset_pipeline()
             else:
                 activity(f"MERGE [orphan] — FAILED: {merge_proc.stderr.strip()}")
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_dir)
