@@ -210,6 +210,9 @@ class StationManager:
         self.last_merge_commit: str | None = None
         self._dispatcher_skip_logged_trains: set[str] = set()
 
+        # Track spec timeout counts persistently across re-routes
+        self.spec_timeout_counts: dict[str, int] = {}
+
         # Cost guardrail: track agent launches in a rolling window
         self.launch_times: deque[float] = deque()
         self.sleep_until: float = 0.0
@@ -894,6 +897,7 @@ class StationManager:
 
         if role == "conductor" and train.spec_path:
             train.spec_timeout_count += 1
+            self.spec_timeout_counts[train.spec_path] = train.spec_timeout_count
             if train.spec_timeout_count >= config.MAX_SPEC_TIMEOUTS:
                 activity(f"TERMINATED spec after {train.spec_timeout_count} overdue: {os.path.basename(train.spec_path)}")
                 train.conductor_failures = 0
@@ -901,6 +905,8 @@ class StationManager:
                 in_progress = train.spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
+                # Clean up persistent timeout tracking
+                self.spec_timeout_counts.pop(train.spec_path, None)
                 repo = train.repo_dir
                 branch = train.branch
                 self._remove_worktree(train.repo_dir, train.working_dir)
@@ -1164,7 +1170,8 @@ class StationManager:
         train.branch = branch_name
         train.repo_dir = working_dir  # original project repo
         train.rework_count = 0
-        train.spec_timeout_count = 0
+        # Restore timeout count from persistent tracking (for re-routed specs)
+        train.spec_timeout_count = self.spec_timeout_counts.get(spec_path, 0)
 
         # If the feature branch already exists with changes, check if inspector already gave feedback
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
@@ -1729,6 +1736,8 @@ class StationManager:
                 os.remove(train.spec_path + ".in_progress")
             if os.path.exists(train.spec_path):
                 os.remove(train.spec_path)
+            # Clean up persistent timeout tracking
+            self.spec_timeout_counts.pop(train.spec_path, None)
 
         if os.path.exists(feedback_path):
             os.remove(feedback_path)
