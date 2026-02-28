@@ -847,7 +847,14 @@ class StationManager:
                     train.conductor_failures += 1
                     backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.conductor_failures), config.MAX_ERROR_BACKOFF)
                     train.conductor_cooldown_until = time.time() + backoff
-                    activity(f"DELAY [{role}:{train.train_id}] — failure #{train.conductor_failures}, retry after {backoff}s")
+                    # Skip DELAY message if conductor made no changes (NO-DIFF will handle cleanup)
+                    show_delay = True
+                    if train.branch and train.working_dir:
+                        diff = self._git_diff_trunk(train.branch, cwd=train.working_dir)
+                        if not diff:
+                            show_delay = False  # NO-DIFF cleanup will run, no retry needed
+                    if show_delay:
+                        activity(f"DELAY [{role}:{train.train_id}] — failure #{train.conductor_failures}, retry after {backoff}s")
                 else:
                     train.inspector_failures += 1
                     backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.inspector_failures), config.MAX_ERROR_BACKOFF)
