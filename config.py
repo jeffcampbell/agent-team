@@ -23,8 +23,8 @@ SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 AGENT_MODELS = {
     "dispatcher":      "claude-haiku-4-5-20251001",
-    "conductor":       "claude-sonnet-4-5-20250929",
-    "inspector":       "claude-haiku-4-5-20251001",
+    "conductor":       "claude-opus-4-6",
+    "inspector":       "claude-opus-4-6",
     "signal":          "claude-haiku-4-5-20251001",
     "station_manager": "claude-haiku-4-5-20251001",
     "ops":             "claude-sonnet-4-5-20250929",
@@ -33,7 +33,7 @@ AGENT_MODELS = {
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
 
 AGENT_MIN_INTERVALS = {
-    "dispatcher":      900,    # 15 minutes
+    "dispatcher":      600,    # 10 minutes
     "conductor":       0,      # on-demand (spec-driven)
     "inspector":       0,      # on-demand (eng completion-driven)
     "signal":          300,    # 5 minutes
@@ -90,11 +90,11 @@ DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 # ─── Train configuration ───────────────────────────────────────────────────
 TRAIN_CONFIG = {
     "regular": {
-        "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "1")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-haiku-4-5-20251001",
+        "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "2")),
+        "conductor_model": "claude-opus-4-6",
+        "inspector_model": "claude-opus-4-6",
         "complexity": "high",
-        "dispatcher_interval": 900,   # 15 min — Sonnet work is expensive
+        "dispatcher_interval": 600,   # 10 min
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
