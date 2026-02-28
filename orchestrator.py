@@ -903,10 +903,20 @@ class StationManager:
             train.spec_timeout_count += 1
             self.spec_timeout_counts[train.spec_path] = train.spec_timeout_count
             if train.spec_timeout_count >= config.MAX_SPEC_TIMEOUTS:
-                activity(f"TERMINATED spec after {train.spec_timeout_count} overdue: {os.path.basename(train.spec_path)}")
+                # Read spec to log what task is being abandoned
+                spec_desc = ""
+                in_progress = train.spec_path + ".in_progress"
+                spec_read_path = in_progress if os.path.exists(in_progress) else train.spec_path
+                try:
+                    with open(spec_read_path) as f:
+                        spec_data = json.load(f)
+                        desc = spec_data.get("description", "")
+                        spec_desc = f" — {desc[:80]}..." if len(desc) > 80 else f" — {desc}" if desc else ""
+                except (OSError, json.JSONDecodeError):
+                    pass
+                activity(f"TERMINATED spec after {train.spec_timeout_count} overdue: {os.path.basename(train.spec_path)}{spec_desc}")
                 train.conductor_failures = 0
                 train.conductor_cooldown_until = 0.0
-                in_progress = train.spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
                 # Clean up persistent timeout tracking
