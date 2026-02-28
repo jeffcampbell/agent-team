@@ -1327,6 +1327,9 @@ class StationManager:
                 in_progress = train.spec_path + ".in_progress"
                 if os.path.exists(in_progress):
                     os.remove(in_progress)
+                # Delete original spec to prevent reprocessing same work
+                if os.path.exists(train.spec_path):
+                    os.remove(train.spec_path)
             train.reset_pipeline()
             return
 
