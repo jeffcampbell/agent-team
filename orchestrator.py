@@ -957,6 +957,13 @@ class StationManager:
         if role == "conductor" and train.spec_path:
             train.spec_timeout_count += 1
             self.spec_timeout_counts[train.spec_path] = train.spec_timeout_count
+            # Persist timeout count to disk to survive orchestrator restarts
+            timeout_file = train.spec_path + ".timeouts"
+            try:
+                with open(timeout_file, 'w') as f:
+                    f.write(str(train.spec_timeout_count))
+            except OSError:
+                pass
             if train.spec_timeout_count >= config.MAX_SPEC_TIMEOUTS:
                 # Read spec to log what task is being abandoned
                 spec_desc = ""
@@ -976,6 +983,9 @@ class StationManager:
                     os.remove(in_progress)
                 # Clean up persistent timeout tracking
                 self.spec_timeout_counts.pop(train.spec_path, None)
+                timeout_file = train.spec_path + ".timeouts"
+                if os.path.exists(timeout_file):
+                    os.remove(timeout_file)
                 repo = train.repo_dir
                 branch = train.branch
                 self._remove_worktree(train.repo_dir, train.working_dir)
@@ -1237,6 +1247,16 @@ class StationManager:
         train.rework_count = 0
         # Restore timeout count from persistent tracking (for re-routed specs)
         train.spec_timeout_count = self.spec_timeout_counts.get(spec_path, 0)
+        # If not in memory, try to restore from disk (survives orchestrator restarts)
+        if train.spec_timeout_count == 0:
+            timeout_file = spec_path + ".timeouts"
+            if os.path.exists(timeout_file):
+                try:
+                    with open(timeout_file) as f:
+                        train.spec_timeout_count = int(f.read().strip())
+                        self.spec_timeout_counts[spec_path] = train.spec_timeout_count
+                except (OSError, ValueError):
+                    pass
 
         # If the feature branch already exists with changes, check if inspector already gave feedback
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
@@ -1817,6 +1837,9 @@ class StationManager:
                 os.remove(train.spec_path)
             # Clean up persistent timeout tracking
             self.spec_timeout_counts.pop(train.spec_path, None)
+            timeout_file = train.spec_path + ".timeouts"
+            if os.path.exists(timeout_file):
+                os.remove(timeout_file)
 
         if os.path.exists(feedback_path):
             os.remove(feedback_path)
