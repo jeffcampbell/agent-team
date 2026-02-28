@@ -931,20 +931,20 @@ class StationManager:
             train.inspector_failures += 1
             backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.inspector_failures), config.MAX_ERROR_BACKOFF)
             train.inspector_cooldown_until = time.time() + backoff
-            # Skip DELAY message if work is already approved and will be orphan-merged
-            feedback_approved = False
+            # Skip DELAY message if inspector already provided feedback (approved or changes requested)
+            feedback_provided = False
             if train.branch:
                 fb = self._feedback_path(train.branch)
                 if os.path.exists(fb):
                     try:
                         with open(fb) as f:
-                            feedback_approved = any(
-                                re.search(r'\bAPPROVED\b', line, re.IGNORECASE)
+                            feedback_provided = any(
+                                re.search(r'\b(APPROVED|CHANGES_REQUESTED)\b', line, re.IGNORECASE)
                                 for line in [f.readline() for _ in range(5)]
                             )
                     except OSError:
                         pass
-            if not feedback_approved:
+            if not feedback_provided:
                 activity(f"DELAY [{agent_name}] — overdue #{train.inspector_failures}, retry after {backoff}s")
 
         if role == "conductor" and train.spec_path:
