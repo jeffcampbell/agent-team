@@ -1734,7 +1734,7 @@ class StationManager:
                     error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
                     # "RUNNING: ..." indicates service already running (not an error)
                     if error_msg.startswith("RUNNING:"):
-                        activity(f"SERVICE already running: {error_msg[8:].strip()}")
+                        activity(f"SERVICE: {error_msg[8:].strip()}")
                     else:
                         activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
             except subprocess.TimeoutExpired:
