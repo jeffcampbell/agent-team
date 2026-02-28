@@ -414,7 +414,13 @@ class StationManager:
         if agent.poll():
             agent.save_log()
             rc = agent.proc.returncode if agent.proc else "?"
-            summary = agent.get_output()[:280].replace("\n", " ").strip()
+            output = agent.get_output().replace("\n", " ").strip()
+            if len(output) > 280:
+                truncated = output[:280]
+                last_space = truncated.rfind(' ')
+                summary = (truncated[:last_space] + "...") if last_space > 0 else (truncated + "...")
+            else:
+                summary = output
             activity(f"ARRIVED  [{agent.name}] rc={rc} — {summary or '(no output)'}")
             self.active_agents[name] = None
             # Set cooldown on non-zero exit with exponential backoff
@@ -807,7 +813,13 @@ class StationManager:
         if agent.poll():
             agent.save_log()
             rc = agent.proc.returncode if agent.proc else "?"
-            summary = agent.get_output()[:280].replace("\n", " ").strip()
+            output = agent.get_output().replace("\n", " ").strip()
+            if len(output) > 280:
+                truncated = output[:280]
+                last_space = truncated.rfind(' ')
+                summary = (truncated[:last_space] + "...") if last_space > 0 else (truncated + "...")
+            else:
+                summary = output
             activity(f"ARRIVED  [{role}:{train.train_id}] rc={rc} — {summary or '(no output)'}")
             if role == "conductor":
                 train.conductor = None
