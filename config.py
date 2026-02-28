@@ -149,6 +149,9 @@ Instructions:
      "working_dir": "{working_dir}"
    }}
 
+   CRITICAL: The "working_dir" field MUST be exactly: {working_dir}
+   Do NOT modify, resolve, or change this path. Use it exactly as shown above.
+
    Complexity guidelines:
    - "low": Documentation changes, bug fixes with clear error messages, config changes, small features (<100 lines diff, 1-2 files)
    - "high": Multi-file features, architectural changes, new subsystems (>100 lines or 3+ files)
