@@ -325,7 +325,7 @@ class StationManager:
             # If approved, delete the spec (work is complete) — don't recover it back into pipeline
             if has_approved:
                 os.remove(path)
-                activity(f"DELETED completed spec: {os.path.basename(original)}")
+                activity(f"DELETED completed spec: {_spec_name_from_path(original)}")
                 continue
 
             # Clean up stale worktrees for all trains in this project
