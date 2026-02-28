@@ -947,7 +947,7 @@ class StationManager:
                         with open(fb) as f:
                             feedback_provided = any(
                                 re.search(r'\b(APPROVED|CHANGES_REQUESTED)\b', line, re.IGNORECASE)
-                                for line in [f.readline() for _ in range(5)]
+                                for line in [f.readline() for _ in range(10)]
                             )
                     except OSError:
                         pass
