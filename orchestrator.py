@@ -1895,6 +1895,14 @@ class StationManager:
                 os.remove(feedback_file)
                 activity(f"CLEANUP orphaned feedback: {basename} (branch gone)")
                 continue
+            # Check if working directory is clean before attempting orphan merge
+            status_proc = subprocess.run(["git", "status", "--porcelain"],
+                                        capture_output=True, text=True, cwd=repo_dir)
+            if status_proc.stdout.strip():
+                # Working directory has uncommitted changes, skip orphan merge
+                # The regular track will handle the merge when it reaches terminus
+                activity(f"ORPHAN MERGE skipped — {branch} has uncommitted changes in main checkout")
+                continue
             activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
             merge_proc = subprocess.run(["git", "merge", "--no-ff", "-X", "theirs", branch],
                                       capture_output=True, text=True, cwd=repo_dir)
