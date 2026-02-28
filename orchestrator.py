@@ -1258,7 +1258,13 @@ class StationManager:
 
         spec_desc = spec_data.get("description", "")
         activity(f"Conductor:{train.train_id} — starting spec '{spec_title}' in {worktree_path}")
-        spec_summary = spec_desc.split("\n")[0][:120].strip()
+        first_line = spec_desc.split("\n")[0].strip()
+        if len(first_line) > 120:
+            truncated = first_line[:120]
+            last_space = truncated.rfind(' ')
+            spec_summary = (truncated[:last_space] + "...") if last_space > 0 else (truncated + "...")
+        else:
+            spec_summary = first_line
         activity(f"  SPEC: {spec_summary}")
         prompt = config.CONDUCTOR_PROMPT.format(
             spec_json=json.dumps(spec_data, indent=2),
