@@ -40,6 +40,18 @@ def activity(msg: str):
 _WATCHER_PATTERN = re.compile(r'\b(ERROR|WARNING|WARN|CRITICAL|FATAL)\b', re.IGNORECASE)
 
 
+def _spec_name_from_path(spec_path: str) -> str:
+    """Extract human-readable spec name from filename (strips timestamp prefix)."""
+    basename = os.path.basename(spec_path)
+    # Remove .json and .in_progress suffixes
+    name = basename.replace('.in_progress', '').replace('.json', '')
+    # Strip YYYYMMDD_HHMMSS_ prefix if present
+    parts = name.split('_', 2)
+    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+        return parts[2]
+    return name
+
+
 class AgentProcess:
     """Thin wrapper around a single Claude subprocess."""
 
@@ -937,7 +949,7 @@ class StationManager:
                 if os.path.exists(in_progress):
                     original = train.spec_path
                     os.rename(in_progress, original)
-                    activity(f"RE-ROUTED spec after Conductor overdue ({train.spec_timeout_count}/{config.MAX_SPEC_TIMEOUTS}): {os.path.basename(original)}")
+                    activity(f"RE-ROUTED spec after Conductor overdue (retry {train.spec_timeout_count}/{config.MAX_SPEC_TIMEOUTS}): {_spec_name_from_path(original)}")
                 self._remove_worktree(train.repo_dir, train.working_dir)
                 # Clean up the feature branch so retry starts fresh (prevents orphan recovery confusion)
                 if train.branch and train.repo_dir and self._git_has_branch(train.branch, cwd=train.repo_dir):
@@ -1579,7 +1591,7 @@ class StationManager:
 
         if train.spec_path and os.path.exists(train.spec_path + ".in_progress"):
             os.rename(train.spec_path + ".in_progress", train.spec_path)
-            activity(f"RE-ROUTED spec: {os.path.basename(train.spec_path)}")
+            activity(f"RE-ROUTED spec: {_spec_name_from_path(train.spec_path)}")
 
         fb = self._feedback_path(branch)
         if os.path.exists(fb):
