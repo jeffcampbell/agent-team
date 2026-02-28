@@ -1303,7 +1303,8 @@ class StationManager:
 
         diff = self._git_diff_trunk(branch, cwd=cwd)
         if not diff:
-            activity(f"Inspector:{train.train_id} — no diff on branch {branch}, cleaning up empty branch")
+            spec_name = _spec_name_from_path(train.spec_path) if train.spec_path else "unknown"
+            activity(f"NO-DIFF [{train.train_id}] — {spec_name} has no changes, skipping review and cleaning up")
             repo = train.repo_dir or cwd
             self._remove_worktree(train.repo_dir, train.working_dir)
             if self._git_has_branch(branch, cwd=repo):
