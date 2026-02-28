@@ -859,7 +859,21 @@ class StationManager:
                     train.inspector_failures += 1
                     backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.inspector_failures), config.MAX_ERROR_BACKOFF)
                     train.inspector_cooldown_until = time.time() + backoff
-                    activity(f"DELAY [{role}:{train.train_id}] — failure #{train.inspector_failures}, retry after {backoff}s")
+                    # Skip DELAY message if inspector already provided feedback (approved or changes requested)
+                    feedback_provided = False
+                    if train.branch:
+                        fb = self._feedback_path(train.branch)
+                        if os.path.exists(fb):
+                            try:
+                                with open(fb) as f:
+                                    feedback_provided = any(
+                                        re.search(r'\b(APPROVED|CHANGES_REQUESTED)\b', line, re.IGNORECASE)
+                                        for line in [f.readline() for _ in range(10)]
+                                    )
+                            except OSError:
+                                pass
+                    if not feedback_provided:
+                        activity(f"DELAY [{role}:{train.train_id}] — failure #{train.inspector_failures}, retry after {backoff}s")
             else:
                 if role == "conductor":
                     train.conductor_failures = 0
