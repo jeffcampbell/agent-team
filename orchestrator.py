@@ -479,7 +479,16 @@ class StationManager:
             config.MAX_ERROR_BACKOFF,
         )
         self.agent_cooldowns[name] = time.time() + backoff
-        activity(f"DELAY [{name}] — overdue #{self.consecutive_failures[name]}, retry after {backoff}s")
+
+        # Skip DELAY message for dispatcher timeout if pipeline is active (spec already created)
+        show_delay = True
+        if name == "dispatcher":
+            pipeline_active = any(t.branch for t in self.trains)
+            if pipeline_active:
+                show_delay = False  # Spec already created and being worked on
+
+        if show_delay:
+            activity(f"DELAY [{name}] — overdue #{self.consecutive_failures[name]}, retry after {backoff}s")
 
         # Signal timed out — roll back log offsets so those lines are retried next run
         if name == "signal":
