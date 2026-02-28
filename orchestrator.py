@@ -1811,10 +1811,10 @@ class StationManager:
             if branch in active_inspector_branches:
                 continue
 
-            # Skip if feedback file is recent — likely from active inspector, not a true orphan
+            # Skip if feedback file is very recent — allow brief settling time after inspector finish
             try:
                 file_age = time.time() - os.path.getmtime(feedback_file)
-                if file_age < 300:  # 5 minutes — orphans from restarts would be older
+                if file_age < 60:  # 1 minute — enough to avoid same-tick races, faster than 5min
                     continue
             except OSError:
                 continue
