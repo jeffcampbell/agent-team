@@ -1767,7 +1767,9 @@ class StationManager:
         if status_proc.stdout.strip():
             # Working directory has uncommitted changes, skip merge and retry later
             if train.train_id not in self._terminus_merge_deferred_logged:
-                activity(f"TERMINUS [{train.train_id}] — merge deferred, main checkout has uncommitted changes")
+                # Show first uncommitted file for context
+                first_file = status_proc.stdout.strip().split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                activity(f"TERMINUS [{train.train_id}] — merge deferred, uncommitted: {first_file}")
                 self._terminus_merge_deferred_logged.add(train.train_id)
             return
 
@@ -1920,7 +1922,9 @@ class StationManager:
                 # Working directory has uncommitted changes, skip orphan merge
                 # The regular track will handle the merge when it reaches terminus
                 if branch not in self._orphan_merge_skip_logged:
-                    activity(f"ORPHAN MERGE skipped — {branch} has uncommitted changes in main checkout")
+                    # Show first uncommitted file for context
+                    first_file = status_proc.stdout.strip().split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                    activity(f"ORPHAN MERGE skipped — {branch}, uncommitted: {first_file}")
                     self._orphan_merge_skip_logged.add(branch)
                 continue
             activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
