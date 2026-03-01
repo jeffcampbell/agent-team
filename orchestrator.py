@@ -1756,6 +1756,15 @@ class StationManager:
             return
 
         repo_dir = train.repo_dir or train.working_dir
+
+        # Check if working directory is clean before attempting merge
+        status_proc = subprocess.run(["git", "status", "--porcelain"],
+                                    capture_output=True, text=True, cwd=repo_dir)
+        if status_proc.stdout.strip():
+            # Working directory has uncommitted changes, skip merge and retry later
+            activity(f"TERMINUS [{train.train_id}] — merge deferred, main checkout has uncommitted changes")
+            return
+
         activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
 
         # Merge in the main repo (not the worktree — main is checked out there)
