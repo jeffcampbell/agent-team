@@ -782,7 +782,10 @@ class StationManager:
 
     def _request_self_restart(self):
         """Gracefully terminate all agents and exit for systemd to restart."""
-        activity("OPS RESTART — new commits detected, restarting orchestrator...")
+        if self.restart_pending:
+            activity("OPS RESTART — executing deferred restart")
+        else:
+            activity("OPS RESTART — new commits detected, restarting orchestrator...")
         # Terminate global agents
         for name, agent in self.active_agents.items():
             if agent and agent.proc and agent.proc.poll() is None:
