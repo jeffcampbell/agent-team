@@ -33,7 +33,7 @@ AGENT_MODELS = {
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
 
 AGENT_MIN_INTERVALS = {
-    "dispatcher":      600,    # 10 minutes
+    "dispatcher":      300,    # 5 minutes (matches TRAIN_CONFIG dispatcher_interval)
     "conductor":       0,      # on-demand (spec-driven)
     "inspector":       0,      # on-demand (eng completion-driven)
     "signal":          300,    # 5 minutes
