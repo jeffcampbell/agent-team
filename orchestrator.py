@@ -1122,6 +1122,26 @@ class StationManager:
         if not os.path.isdir(default_dir):
             default_dir = config.DEVELOPMENT_DIR
 
+        # Skip dispatcher if orphaned approved branches exist and main checkout is dirty
+        # (prevents generating specs that conductor will immediately skip)
+        if os.path.isdir(default_dir):
+            status_proc = subprocess.run(["git", "status", "--porcelain"],
+                                        capture_output=True, text=True, cwd=default_dir)
+            if status_proc.stdout.strip():
+                # Main checkout has uncommitted changes — check for orphaned approved branches
+                for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
+                    try:
+                        with open(feedback_file) as f:
+                            if any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
+                                # Found approved feedback — check if branch exists
+                                basename = os.path.basename(feedback_file)
+                                branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
+                                if self._git_has_branch(branch, cwd=default_dir):
+                                    activity(f"Dispatcher — skipped, approved work blocked by uncommitted changes")
+                                    return
+                    except OSError:
+                        continue
+
         # Don't generate new specs while any train has an active pipeline
         active_trains = [t for t in self.trains if t.branch]
         if active_trains:
