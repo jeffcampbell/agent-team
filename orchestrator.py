@@ -221,6 +221,7 @@ class StationManager:
         }
         self.last_merge_commit: str | None = None
         self._dispatcher_skip_logged_trains: set[str] = set()
+        self._orphan_merge_skip_logged: set[str] = set()  # branches with uncommitted changes already logged
 
         # Track spec timeout counts persistently across re-routes
         self.spec_timeout_counts: dict[str, int] = {}
@@ -1893,6 +1894,7 @@ class StationManager:
             repo_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
             if not self._git_has_branch(branch, cwd=repo_dir):
                 os.remove(feedback_file)
+                self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking for deleted branch
                 activity(f"CLEANUP orphaned feedback: {basename} (branch gone)")
                 continue
             # Check if working directory is clean before attempting orphan merge
@@ -1901,9 +1903,12 @@ class StationManager:
             if status_proc.stdout.strip():
                 # Working directory has uncommitted changes, skip orphan merge
                 # The regular track will handle the merge when it reaches terminus
-                activity(f"ORPHAN MERGE skipped — {branch} has uncommitted changes in main checkout")
+                if branch not in self._orphan_merge_skip_logged:
+                    activity(f"ORPHAN MERGE skipped — {branch} has uncommitted changes in main checkout")
+                    self._orphan_merge_skip_logged.add(branch)
                 continue
             activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
+            self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking on merge attempt
             merge_proc = subprocess.run(["git", "merge", "--no-ff", "-X", "theirs", branch],
                                       capture_output=True, text=True, cwd=repo_dir)
             if merge_proc.returncode == 0:
