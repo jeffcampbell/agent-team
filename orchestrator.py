@@ -1279,14 +1279,16 @@ class StationManager:
 
         # If the feature branch already exists with changes, check if inspector already gave feedback
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
-            # Check if inspector already requested changes - read entire file to handle markdown formatting
+            # Check if inspector already gave feedback - read entire file to handle markdown formatting
             feedback_path = self._feedback_path(branch_name)
             has_changes_requested = False
+            has_approved = False
             if os.path.exists(feedback_path):
                 try:
                     with open(feedback_path) as f:
                         content = f.read()
                     has_changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
+                    has_approved = bool(re.search(r'\bAPPROVED\b', content, re.IGNORECASE))
                 except OSError:
                     pass
 
@@ -1303,7 +1305,14 @@ class StationManager:
                 os.rename(spec_path, spec_path + ".in_progress")
                 return
 
-            # No feedback or approved feedback — route to inspector for orphan recovery
+            if has_approved:
+                # Approved work awaiting merge — skip this spec, let ORPHAN MERGE handle it
+                activity(f"Conductor:{train.train_id} — branch {branch_name} approved, skipping spec (orphan merge will handle)")
+                os.remove(spec_path)
+                train.reset_pipeline()
+                return
+
+            # No feedback — route to inspector for orphan recovery
             activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
 
             try:
