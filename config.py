@@ -94,7 +94,7 @@ TRAIN_CONFIG = {
         "conductor_model": "claude-opus-4-6",
         "inspector_model": "claude-opus-4-6",
         "complexity": "high",
-        "dispatcher_interval": 600,   # 10 min
+        "dispatcher_interval": 300,   # 5 min
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
