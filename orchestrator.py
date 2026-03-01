@@ -1936,6 +1936,32 @@ class StationManager:
                             if os.path.exists(in_progress):
                                 os.remove(in_progress)
                         train.reset_pipeline()
+
+                # Restart service after orphan merge (matching TERMINUS merge behavior)
+                if config.SERVICE_RESTART_CMD:
+                    try:
+                        result = subprocess.run(
+                            config.SERVICE_RESTART_CMD,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=config.SERVICE_RESTART_TIMEOUT
+                        )
+                        if result.returncode == 0:
+                            activity("SERVICE restarted successfully")
+                        else:
+                            error_output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+                            error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
+                            if error_msg.startswith("RUNNING:"):
+                                activity(f"SERVICE: {error_msg[8:].strip()}")
+                            else:
+                                activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
+                    except subprocess.TimeoutExpired:
+                        activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
+                elif config.RAILWAY_PROJECT:
+                    self._deploy_to_railway(cwd=repo_dir)
+                else:
+                    activity("SERVICE restart skipped (no deployment method configured)")
             else:
                 activity(f"MERGE [orphan] — FAILED: {merge_proc.stderr.strip()}")
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_dir)
