@@ -942,15 +942,14 @@ class StationManager:
 
         if role == "conductor":
             train.conductor = None
-            train.conductor_failures += 1
-            # Skip DELAY message when handling a spec (TERMINATED or RE-ROUTED msg is clearer)
+            # Only apply cooldown for timeouts without a spec (train-level issues)
+            # Spec timeouts are tracked separately and shouldn't delay retry
             if not train.spec_path:
+                train.conductor_failures += 1
                 backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.conductor_failures), config.MAX_ERROR_BACKOFF)
                 train.conductor_cooldown_until = time.time() + backoff
                 activity(f"DELAY [{agent_name}] — overdue #{train.conductor_failures}, retry after {backoff}s")
-            else:
-                backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.conductor_failures), config.MAX_ERROR_BACKOFF)
-                train.conductor_cooldown_until = time.time() + backoff
+            # else: spec timeout handling happens below (lines 963+)
         else:
             train.inspector = None
             train.inspector_failures += 1
