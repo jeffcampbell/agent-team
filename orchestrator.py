@@ -1765,12 +1765,22 @@ class StationManager:
         status_proc = subprocess.run(["git", "status", "--porcelain"],
                                     capture_output=True, text=True, cwd=repo_dir)
         if status_proc.stdout.strip():
-            # Working directory has uncommitted changes, skip merge and retry later
+            # Working directory has uncommitted changes, orphan this work to unblock the train
             if train.train_id not in self._terminus_merge_deferred_logged:
                 # Show first uncommitted file for context
                 first_file = status_proc.stdout.strip().split('\n')[0][3:]  # strip status prefix (e.g., " M ")
-                activity(f"TERMINUS [{train.train_id}] — merge deferred, uncommitted: {first_file}")
+                activity(f"TERMINUS [{train.train_id}] — orphaning approved work, uncommitted: {first_file}")
                 self._terminus_merge_deferred_logged.add(train.train_id)
+            # Remove worktree and spec file, but keep feedback file for orphan cleanup
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if train.spec_path:
+                in_progress = train.spec_path + ".in_progress"
+                if os.path.exists(in_progress):
+                    os.remove(in_progress)
+                if os.path.exists(train.spec_path):
+                    os.remove(train.spec_path)
+            train.reset_pipeline()
+            self._terminus_merge_deferred_logged.discard(train.train_id)
             return
 
         activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
