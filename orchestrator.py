@@ -952,10 +952,7 @@ class StationManager:
             # else: spec timeout handling happens below (lines 963+)
         else:
             train.inspector = None
-            train.inspector_failures += 1
-            backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.inspector_failures), config.MAX_ERROR_BACKOFF)
-            train.inspector_cooldown_until = time.time() + backoff
-            # Skip DELAY message if inspector already provided feedback (approved or changes requested)
+            # Check if inspector already provided feedback before applying cooldown
             feedback_provided = False
             if train.branch:
                 fb = self._feedback_path(train.branch)
@@ -968,7 +965,11 @@ class StationManager:
                             )
                     except OSError:
                         pass
+            # Only apply cooldown if inspector didn't complete its work (no feedback provided)
             if not feedback_provided:
+                train.inspector_failures += 1
+                backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.inspector_failures), config.MAX_ERROR_BACKOFF)
+                train.inspector_cooldown_until = time.time() + backoff
                 activity(f"DELAY [{agent_name}] — overdue #{train.inspector_failures}, retry after {backoff}s")
 
         if role == "conductor" and train.spec_path:
