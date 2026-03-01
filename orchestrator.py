@@ -1930,6 +1930,10 @@ class StationManager:
         """Extract and log the ops agent's activity summary with visual breakers."""
         if not output or not output.strip():
             return
+        # Skip OPS REPORT if ops agent hit rate limit or other error
+        output_lower = output.lower()
+        if "out of extra usage" in output or "rate limit" in output_lower:
+            return
         # Use the full output as the summary — ops is instructed to lead with it
         lines = output.strip().splitlines()
         # Cap at 15 lines to keep the log readable
