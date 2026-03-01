@@ -222,6 +222,7 @@ class StationManager:
         self.last_merge_commit: str | None = None
         self._dispatcher_skip_logged_trains: set[str] = set()
         self._orphan_merge_skip_logged: set[str] = set()  # branches with uncommitted changes already logged
+        self._terminus_merge_deferred_logged: set[str] = set()  # train_ids with deferred merges already logged
 
         # Track spec timeout counts persistently across re-routes
         self.spec_timeout_counts: dict[str, int] = {}
@@ -1765,10 +1766,13 @@ class StationManager:
                                     capture_output=True, text=True, cwd=repo_dir)
         if status_proc.stdout.strip():
             # Working directory has uncommitted changes, skip merge and retry later
-            activity(f"TERMINUS [{train.train_id}] — merge deferred, main checkout has uncommitted changes")
+            if train.train_id not in self._terminus_merge_deferred_logged:
+                activity(f"TERMINUS [{train.train_id}] — merge deferred, main checkout has uncommitted changes")
+                self._terminus_merge_deferred_logged.add(train.train_id)
             return
 
         activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
+        self._terminus_merge_deferred_logged.discard(train.train_id)  # Clear deferral tracking on merge attempt
 
         # Merge in the main repo (not the worktree — main is checked out there)
         rc, merge_stdout, merge_stderr = self._git_rc("merge", "--no-ff", train.branch, cwd=repo_dir)
