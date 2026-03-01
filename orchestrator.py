@@ -1508,6 +1508,9 @@ class StationManager:
     def _train_phase_service_recovery(self, train: Train):
         """If Inspector approved on this train, merge in main repo and restart the service."""
         if train.inspector is not None:
+            # Check if inspector just finished
+            self._is_train_agent_active(train, "inspector")
+        if train.inspector is not None:
             return
         if not train.branch:
             return
