@@ -379,19 +379,24 @@ class StationManager:
         """
         PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
         specs = sorted(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json")))
+
+        # When filtering by complexity, parse each file only once (not twice)
         if complexity is not None:
-            filtered = []
+            spec_data = []  # [(priority_order, path, parsed_data), ...]
             for path in specs:
                 try:
                     with open(path) as f:
                         data = json.load(f)
                     spec_complexity = data.get("complexity", "high")
                     if spec_complexity == complexity:
-                        filtered.append(path)
+                        priority = PRIORITY_ORDER.get(data.get("priority", "medium"), 1)
+                        spec_data.append((priority, path))
                 except (json.JSONDecodeError, OSError):
                     if complexity == "high":
-                        filtered.append(path)
-            specs = filtered
+                        spec_data.append((1, path))  # default priority for malformed specs
+            return [path for _, path in sorted(spec_data)]
+
+        # No filtering — parse once for sorting only
         def sort_key(path: str) -> tuple[int, str]:
             try:
                 with open(path) as f:
