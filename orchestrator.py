@@ -1811,7 +1811,7 @@ class StationManager:
             if train.train_id not in self._terminus_merge_deferred_logged:
                 # Show first uncommitted file for context
                 first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
-                activity(f"TERMINUS [{train.train_id}] — orphaning approved work, uncommitted: {first_file}")
+                activity(f"TERMINUS [{train.train_id}] — orphaning {train.branch}, uncommitted: {first_file}")
                 self._terminus_merge_deferred_logged.add(train.train_id)
             # Remove worktree and spec file, but keep feedback file for orphan cleanup
             self._remove_worktree(train.repo_dir, train.working_dir)
