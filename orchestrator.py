@@ -1808,7 +1808,7 @@ class StationManager:
             # Working directory has uncommitted changes, orphan this work to unblock the train
             if train.train_id not in self._terminus_merge_deferred_logged:
                 # Show first uncommitted file for context
-                first_file = status_proc.stdout.strip().split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                 activity(f"TERMINUS [{train.train_id}] — orphaning approved work, uncommitted: {first_file}")
                 self._terminus_merge_deferred_logged.add(train.train_id)
             # Remove worktree and spec file, but keep feedback file for orphan cleanup
@@ -1972,7 +1972,7 @@ class StationManager:
                 # The regular track will handle the merge when it reaches terminus
                 if branch not in self._orphan_merge_skip_logged:
                     # Show first uncommitted file for context
-                    first_file = status_proc.stdout.strip().split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                    first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                     activity(f"ORPHAN MERGE skipped — {branch}, uncommitted: {first_file}")
                     self._orphan_merge_skip_logged.add(branch)
                 continue
