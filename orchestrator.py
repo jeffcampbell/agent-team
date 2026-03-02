@@ -1153,10 +1153,10 @@ class StationManager:
         # Don't generate new specs while any train has an active pipeline
         active_trains = [t for t in self.trains if t.branch]
         if active_trains:
-            train_ids = ", ".join(t.train_id for t in active_trains)
+            trains_detail = ", ".join(f"{t.train_id}:{t.branch}" for t in active_trains)
             key = frozenset(t.train_id for t in active_trains)
             if key != self._dispatcher_skip_logged_trains:
-                activity(f"Dispatcher — skipped, pipeline active on {train_ids}")
+                activity(f"Dispatcher — skipped, pipeline active on {trains_detail}")
                 self._dispatcher_skip_logged_trains = key
             return
 
