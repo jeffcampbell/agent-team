@@ -1293,6 +1293,8 @@ class StationManager:
         train.branch = branch_name
         train.repo_dir = working_dir  # original project repo
         train.rework_count = 0
+        # Clear TERMINUS deferral tracking when starting new work
+        self._terminus_merge_deferred_logged.discard(train.train_id)
         # Restore timeout count from persistent tracking (for re-routed specs)
         train.spec_timeout_count = self.spec_timeout_counts.get(spec_path, 0)
         # If not in memory, try to restore from disk (survives orchestrator restarts)
