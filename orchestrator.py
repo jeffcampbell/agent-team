@@ -1139,7 +1139,9 @@ class StationManager:
                                 branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
                                 if self._git_has_branch(branch, cwd=default_dir):
                                     if not self._dispatcher_orphan_skip_logged:
-                                        activity(f"Dispatcher — skipped, approved work blocked by uncommitted changes")
+                                        # Show branch and first uncommitted file for context
+                                        first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                                        activity(f"Dispatcher — skipped, {branch} approved work blocked by uncommitted: {first_file}")
                                         self._dispatcher_orphan_skip_logged = True
                                     return
                     except OSError:
