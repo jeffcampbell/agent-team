@@ -1818,7 +1818,6 @@ class StationManager:
                 if os.path.exists(train.spec_path):
                     os.remove(train.spec_path)
             train.reset_pipeline()
-            self._terminus_merge_deferred_logged.discard(train.train_id)
             return
 
         activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
