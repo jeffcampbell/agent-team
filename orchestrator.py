@@ -1816,13 +1816,12 @@ class StationManager:
         repo_dir = train.repo_dir or train.working_dir
 
         # Check if working directory is clean before attempting merge
-        status_proc = subprocess.run(["git", "status", "--porcelain"],
-                                    capture_output=True, text=True, cwd=repo_dir)
-        if status_proc.stdout.strip():
+        status_output = self._get_repo_status(repo_dir)
+        if status_output.strip():
             # Working directory has uncommitted changes, orphan this work to unblock the train
             if train.train_id not in self._terminus_merge_deferred_logged:
                 # Show first uncommitted file for context
-                first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                 activity(f"TERMINUS [{train.train_id}] — orphaning {train.branch}, uncommitted: {first_file}")
                 self._terminus_merge_deferred_logged.add(train.train_id)
             # Remove worktree and spec file, but keep feedback file for orphan cleanup
