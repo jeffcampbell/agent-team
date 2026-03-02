@@ -180,6 +180,44 @@ The dashboard shows:
 
 A JSON API is also available at `GET /api/status` for programmatic access.
 
+## Customizing for your project
+
+Yamanote is a general-purpose orchestrator. All project-specific context comes from configuration and files in your target project — the agent prompts are intentionally generic.
+
+### Required
+
+1. **Set `AGENT_TEAM_DEFAULT_PROJECT`** — the directory name of your project under `AGENT_TEAM_DEV_DIR`:
+   ```bash
+   AGENT_TEAM_DEFAULT_PROJECT=my-app
+   ```
+
+2. **Create a `CLAUDE.md`** in your project's root — this is the primary way agents understand your project. Include:
+   - Build and test commands (`npm run build`, `./gradlew assembleDebug`, etc.)
+   - Architecture overview (framework, language, key directories)
+   - Coding conventions and style preferences
+   - Any constraints agents should respect
+
+### Optional
+
+- **Create a `SPEC.md`** in your project with a feature roadmap or product spec. The Dispatcher reads this to generate more targeted feature specs.
+- **Set Railway env vars** for Railway deployment:
+  ```bash
+  AGENT_TEAM_RAILWAY_PROJECT=my-railway-project
+  AGENT_TEAM_RAILWAY_SERVICE=my-service-name
+  ```
+- **Set `AGENT_TEAM_SERVICE_RESTART_CMD`** for local service restarts after merges:
+  ```bash
+  AGENT_TEAM_SERVICE_RESTART_CMD="sudo systemctl restart my-app.service"
+  ```
+- **Set `AGENT_TEAM_APP_LOG_GLOB`** so Signal can monitor your application logs:
+  ```bash
+  AGENT_TEAM_APP_LOG_GLOB="logs/*.log"
+  ```
+- **Set `AGENT_TEAM_DASHBOARD_PORT`** to enable the web dashboard:
+  ```bash
+  AGENT_TEAM_DASHBOARD_PORT=8080
+  ```
+
 ## Adding work manually
 
 Drop a JSON spec file into `agents/backlog/`:
@@ -205,7 +243,7 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_TEAM_DEV_DIR` | `~/Development` | Parent directory containing your project(s) |
-| `AGENT_TEAM_DEFAULT_PROJECT` | `quote-bot` | Default project directory name under `AGENT_TEAM_DEV_DIR` |
+| `AGENT_TEAM_DEFAULT_PROJECT` | *(none — required)* | Project directory name under `AGENT_TEAM_DEV_DIR` |
 | `AGENT_TEAM_SERVICE_RESTART_CMD` | *(empty — skip restart)* | Shell command to restart your app after a merge |
 | `AGENT_TEAM_DASHBOARD_PORT` | `0` *(disabled)* | Port for the web dashboard (`0` = off) |
 | `AGENT_TEAM_APP_LOG_GLOB` | *(auto-discover)* | Glob pattern for the project's log file (e.g. `logs/*.log`) |

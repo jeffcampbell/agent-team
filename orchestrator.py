@@ -487,6 +487,15 @@ class StationManager:
         )
         return result.stdout.strip()
 
+    def _git_rc(self, *args: str, cwd: str | None = None) -> tuple[int, str, str]:
+        """Run a git command and return (returncode, stdout, stderr)."""
+        result = subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True,
+            cwd=cwd or config.BASE_DIR,
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+
     def _create_worktree(self, repo_dir: str, branch: str, train_id: str) -> str:
         """Create a git worktree for the given branch and return its path.
 
@@ -1532,8 +1541,54 @@ class StationManager:
         activity(f"TERMINUS [{train.train_id}] — branch {train.branch} approved, merging to trunk.")
 
         # Merge in the main repo (not the worktree — main is checked out there)
-        merge_result = self._git("merge", "--no-ff", train.branch, cwd=repo_dir)
-        activity(f"MERGE [{train.train_id}] — {merge_result or 'ok'}")
+        rc, merge_stdout, merge_stderr = self._git_rc("merge", "--no-ff", train.branch, cwd=repo_dir)
+
+        if rc != 0:
+            # Merge failed (conflicts or other error) — abort and re-queue
+            activity(f"MERGE FAILED [{train.train_id}] — {merge_stderr[:200] or merge_stdout[:200]}")
+            self._git("merge", "--abort", cwd=repo_dir)
+
+            # Re-queue the spec so it can be retried on a clean base
+            if train.spec_path:
+                ip_path = train.spec_path + ".in_progress"
+                if os.path.exists(ip_path):
+                    os.rename(ip_path, train.spec_path)
+                    activity(f"REQUEUE [{train.train_id}] — spec re-queued to backlog after merge failure")
+
+            # Clean up the worktree and branch
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if self._git_has_branch(train.branch, cwd=repo_dir):
+                self._git("branch", "-D", train.branch, cwd=repo_dir)
+
+            if os.path.exists(feedback_path):
+                os.remove(feedback_path)
+
+            train.reset_pipeline()
+            return
+
+        activity(f"MERGE [{train.train_id}] — {merge_stdout or 'ok'}")
+
+        # Verify no conflict markers in tracked files
+        conflict_check = self._git("diff", "--check", "HEAD~1..HEAD", cwd=repo_dir)
+        if conflict_check:
+            activity(f"MERGE WARNING [{train.train_id}] — conflict markers detected, reverting merge")
+            self._git("revert", "--no-edit", "HEAD", cwd=repo_dir)
+
+            if train.spec_path:
+                ip_path = train.spec_path + ".in_progress"
+                if os.path.exists(ip_path):
+                    os.rename(ip_path, train.spec_path)
+                    activity(f"REQUEUE [{train.train_id}] — spec re-queued after conflict marker detection")
+
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if self._git_has_branch(train.branch, cwd=repo_dir):
+                self._git("branch", "-D", train.branch, cwd=repo_dir)
+
+            if os.path.exists(feedback_path):
+                os.remove(feedback_path)
+
+            train.reset_pipeline()
+            return
 
         current_head = self._git_last_commit(cwd=repo_dir)
         self.last_merge_commit = current_head
