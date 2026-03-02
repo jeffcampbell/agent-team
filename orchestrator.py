@@ -258,6 +258,9 @@ class StationManager:
         # Deferred restart: set True when ops wants to restart but a conductor is mid-run
         self.restart_pending: bool = False
 
+        # Git status cache: avoid redundant git status calls within a single tick
+        self._git_status_cache: dict[str, str] = {}  # repo_dir → porcelain output
+
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
 
@@ -630,6 +633,16 @@ class StationManager:
     def _git_has_branch(self, branch: str, cwd: str | None = None) -> bool:
         result = self._git("branch", "--list", branch, cwd=cwd)
         return bool(result.strip())
+
+    def _get_repo_status(self, repo_dir: str) -> str:
+        """Get git status --porcelain output, cached per tick to avoid redundant calls."""
+        if repo_dir not in self._git_status_cache:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            self._git_status_cache[repo_dir] = result.stdout
+        return self._git_status_cache[repo_dir]
 
     def _git_diff_trunk(self, branch: str, cwd: str | None = None) -> str:
         return self._git("diff", f"{config.TRUNK_BRANCH}..{branch}", cwd=cwd)
@@ -1126,9 +1139,8 @@ class StationManager:
         # Skip dispatcher if orphaned approved branches exist and main checkout is dirty
         # (prevents generating specs that conductor will immediately skip)
         if os.path.isdir(default_dir):
-            status_proc = subprocess.run(["git", "status", "--porcelain"],
-                                        capture_output=True, text=True, cwd=default_dir)
-            if status_proc.stdout.strip():
+            status_output = self._get_repo_status(default_dir)
+            if status_output.strip():
                 # Main checkout has uncommitted changes — check for orphaned approved branches
                 for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
                     try:
@@ -1140,7 +1152,7 @@ class StationManager:
                                 if self._git_has_branch(branch, cwd=default_dir):
                                     if not self._dispatcher_orphan_skip_logged:
                                         # Show branch and first uncommitted file for context
-                                        first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                                        first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                                         activity(f"Dispatcher — skipped, {branch} approved work blocked by uncommitted: {first_file}")
                                         self._dispatcher_orphan_skip_logged = True
                                     return
@@ -1967,14 +1979,13 @@ class StationManager:
                 activity(f"CLEANUP orphaned feedback: {basename} (branch gone)")
                 continue
             # Check if working directory is clean before attempting orphan merge
-            status_proc = subprocess.run(["git", "status", "--porcelain"],
-                                        capture_output=True, text=True, cwd=repo_dir)
-            if status_proc.stdout.strip():
+            status_output = self._get_repo_status(repo_dir)
+            if status_output.strip():
                 # Working directory has uncommitted changes, skip orphan merge
                 # The regular track will handle the merge when it reaches terminus
                 if branch not in self._orphan_merge_skip_logged:
                     # Show first uncommitted file for context
-                    first_file = status_proc.stdout.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                    first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                     activity(f"ORPHAN MERGE skipped — {branch}, uncommitted: {first_file}")
                     self._orphan_merge_skip_logged.add(branch)
                 continue
@@ -2134,6 +2145,9 @@ class StationManager:
                 if time.time() < self.sleep_until:
                     time.sleep(config.TICK_INTERVAL)
                     continue
+
+                # Clear git status cache at the start of each tick
+                self._git_status_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
