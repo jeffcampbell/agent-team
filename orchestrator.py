@@ -260,6 +260,8 @@ class StationManager:
 
         # Git status cache: avoid redundant git status calls within a single tick
         self._git_status_cache: dict[str, str] = {}  # repo_dir → porcelain output
+        # Git branch existence cache: avoid redundant branch checks within a single tick
+        self._git_branch_cache: dict[tuple[str, str], bool] = {}  # (branch, cwd) → exists
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -631,8 +633,12 @@ class StationManager:
         self._git("worktree", "prune", cwd=repo_dir)
 
     def _git_has_branch(self, branch: str, cwd: str | None = None) -> bool:
-        result = self._git("branch", "--list", branch, cwd=cwd)
-        return bool(result.strip())
+        """Check if branch exists, cached per tick to avoid redundant calls."""
+        cache_key = (branch, cwd or config.BASE_DIR)
+        if cache_key not in self._git_branch_cache:
+            result = self._git("branch", "--list", branch, cwd=cwd)
+            self._git_branch_cache[cache_key] = bool(result.strip())
+        return self._git_branch_cache[cache_key]
 
     def _get_repo_status(self, repo_dir: str) -> str:
         """Get git status --porcelain output, cached per tick to avoid redundant calls."""
@@ -2145,8 +2151,9 @@ class StationManager:
                     time.sleep(config.TICK_INTERVAL)
                     continue
 
-                # Clear git status cache at the start of each tick
+                # Clear git caches at the start of each tick
                 self._git_status_cache.clear()
+                self._git_branch_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
