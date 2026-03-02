@@ -153,6 +153,7 @@ ls -lt agents/logs/ | head
 ### 6. Web dashboard (optional)
 
 ![Dashboard](img/yamanote_dashboard.png)
+*The pipeline view shows specs traveling around the Yamanote loop — from Spec through Create, Review, Rework, and finally Merged — with agent status cards and train counts below.*
 
 A locally-hosted web dashboard gives an at-a-glance view of agent status, pipeline progress, backlog, and recent activity — accessible from any device on the LAN. Disabled by default.
 
@@ -177,6 +178,9 @@ The dashboard shows:
 - **Backlog** — queued specs with priority
 - **Activity feed** — color-coded event log
 - **Configuration** — collapsible current settings
+
+![Travel Board](img/yamanote_travel_board.png)
+*The travel board tracks specs as they move through the pipeline — Backlog (awaiting departure), Traveling (in transit with a train), and Arrived (merged to trunk) — styled after a Japanese train station departure board.*
 
 A JSON API is also available at `GET /api/status` for programmatic access.
 
