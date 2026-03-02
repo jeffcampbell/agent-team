@@ -1158,6 +1158,9 @@ class StationManager:
                 self._dispatcher_skip_logged_trains = key
             return
 
+        # Clear the deduplication tracking when all trains become idle
+        self._dispatcher_skip_logged_trains = set()
+
         # Use the shortest dispatcher interval among idle train types
         now = time.time()
         idle_types = set(t.train_type for t in self.trains if not t.branch)
