@@ -337,6 +337,7 @@ class StationManager:
         """
         pattern = os.path.join(config.BACKLOG_DIR, "*.json.in_progress")
         orphaned = glob.glob(pattern)
+        cleaned_worktree_bases = set()  # Track cleaned worktree dirs to avoid redundant cleanup
         for path in orphaned:
             original = path.removesuffix(".in_progress")
             # Read spec to derive branch name and working_dir for cleanup
@@ -376,7 +377,9 @@ class StationManager:
             # Skip cleanup if there's active CHANGES_REQUESTED feedback — worktree is legitimately set up for rework
             if not has_changes_requested and os.path.isdir(working_dir):
                 worktree_base = os.path.join(working_dir, ".worktrees")
-                if os.path.isdir(worktree_base):
+                # Skip if we've already cleaned this worktree directory (avoid redundant os.listdir)
+                if os.path.isdir(worktree_base) and worktree_base not in cleaned_worktree_bases:
+                    cleaned_worktree_bases.add(worktree_base)
                     for entry in os.listdir(worktree_base):
                         wt_path = os.path.join(worktree_base, entry)
                         if os.path.isdir(wt_path):
