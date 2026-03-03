@@ -272,6 +272,8 @@ class StationManager:
         self._approved_feedback_cache: list[tuple[str, str]] | None = None  # [(file_path, branch)]
         # Feedback path cache: avoid redundant os.path.exists/glob calls within a single tick
         self._feedback_path_cache: dict[str, str] = {}  # branch → feedback file path
+        # Signal open bugs cache: avoid redundant backlog parsing within a single tick
+        self._signal_open_bugs_cache: list[dict] | None = None
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -461,7 +463,13 @@ class StationManager:
         return any(b == branch for _, b in self._get_approved_feedback())
 
     def _signal_open_bugs(self) -> list[dict]:
-        """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
+        """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress).
+
+        Cached per tick to avoid redundant file I/O when called by both _log_watcher_tick and _phase_signal.
+        """
+        if self._signal_open_bugs_cache is not None:
+            return self._signal_open_bugs_cache
+
         bugs = []
         for pattern in ("*.json", "*.json.in_progress"):
             for path in glob.glob(os.path.join(config.BACKLOG_DIR, pattern)):
@@ -472,6 +480,7 @@ class StationManager:
                         bugs.append(data)
                 except (json.JSONDecodeError, OSError):
                     continue
+        self._signal_open_bugs_cache = bugs
         return bugs
 
     def _is_agent_active(self, name: str) -> bool:
@@ -2190,6 +2199,7 @@ class StationManager:
                 self._feedback_files_cache = None
                 self._approved_feedback_cache = None
                 self._feedback_path_cache.clear()
+                self._signal_open_bugs_cache = None
 
                 # Per-train phases
                 for train in self.trains:
