@@ -266,6 +266,8 @@ class StationManager:
         self._backlog_cache: dict[str | None, list[str]] = {}  # complexity → spec paths
         # App log path cache: avoid redundant glob/mtime calls within a single tick
         self._app_log_path_cache: dict[str, str | None] = {}  # project_dir → log path
+        # Feedback files cache: avoid redundant glob calls within a single tick
+        self._feedback_files_cache: list[str] | None = None
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -418,6 +420,13 @@ class StationManager:
         result = sorted(specs, key=sort_key)
         self._backlog_cache[complexity] = result
         return result
+
+    def _get_feedback_files(self) -> list[str]:
+        """Return list of all feedback file paths. Cached per tick."""
+        if self._feedback_files_cache is not None:
+            return self._feedback_files_cache
+        self._feedback_files_cache = glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md"))
+        return self._feedback_files_cache
 
     def _signal_open_bugs(self) -> list[dict]:
         """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
@@ -1172,7 +1181,7 @@ class StationManager:
             status_output = self._get_repo_status(default_dir)
             if status_output.strip():
                 # Main checkout has uncommitted changes — check for orphaned approved branches
-                for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
+                for feedback_file in self._get_feedback_files():
                     try:
                         with open(feedback_file) as f:
                             if any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
@@ -1979,7 +1988,7 @@ class StationManager:
             if train.inspector is not None and train.branch
         }
 
-        for feedback_file in glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md")):
+        for feedback_file in self._get_feedback_files():
             try:
                 with open(feedback_file) as f:
                     if not any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
@@ -2180,6 +2189,7 @@ class StationManager:
                 self._git_branch_cache.clear()
                 self._backlog_cache.clear()
                 self._app_log_path_cache.clear()
+                self._feedback_files_cache = None
 
                 # Per-train phases
                 for train in self.trains:
