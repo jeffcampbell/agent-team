@@ -264,6 +264,8 @@ class StationManager:
         self._git_branch_cache: dict[tuple[str, str], bool] = {}  # (branch, cwd) → exists
         # Backlog specs cache: avoid redundant file I/O within a single tick
         self._backlog_cache: dict[str | None, list[str]] = {}  # complexity → spec paths
+        # App log path cache: avoid redundant glob/mtime calls within a single tick
+        self._app_log_path_cache: dict[str, str | None] = {}  # project_dir → log path
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -673,11 +675,15 @@ class StationManager:
         return self._git("rev-parse", "HEAD", cwd=cwd)
 
     def _find_app_log(self, project_dir: str) -> str | None:
-        """Resolve the project's application log file.
+        """Resolve the project's application log file, cached per tick to avoid redundant glob/mtime calls.
 
         Priority: AGENT_TEAM_APP_LOG_GLOB env var → common log file names.
         Returns the most-recently-modified match, or None.
         """
+        # Check cache first
+        if project_dir in self._app_log_path_cache:
+            return self._app_log_path_cache[project_dir]
+
         patterns = []
         if config.APP_LOG_GLOB:
             patterns.append(config.APP_LOG_GLOB)
@@ -690,7 +696,9 @@ class StationManager:
                 reverse=True,
             )
             if matches:
+                self._app_log_path_cache[project_dir] = matches[0]
                 return matches[0]
+        self._app_log_path_cache[project_dir] = None
         return None
 
     def _fetch_railway_logs(self, environment: str) -> str:
@@ -2171,6 +2179,7 @@ class StationManager:
                 self._git_status_cache.clear()
                 self._git_branch_cache.clear()
                 self._backlog_cache.clear()
+                self._app_log_path_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
