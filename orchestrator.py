@@ -268,6 +268,8 @@ class StationManager:
         self._app_log_path_cache: dict[str, str | None] = {}  # project_dir → log path
         # Feedback files cache: avoid redundant glob calls within a single tick
         self._feedback_files_cache: list[str] | None = None
+        # Approved feedback cache: avoid redundant file parsing within a single tick
+        self._approved_feedback_cache: list[tuple[str, str]] | None = None  # [(file_path, branch)]
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -427,6 +429,23 @@ class StationManager:
             return self._feedback_files_cache
         self._feedback_files_cache = glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md"))
         return self._feedback_files_cache
+
+    def _get_approved_feedback(self) -> list[tuple[str, str]]:
+        """Return list of (feedback_file_path, branch_name) for APPROVED feedback. Cached per tick."""
+        if self._approved_feedback_cache is not None:
+            return self._approved_feedback_cache
+        result = []
+        for feedback_file in self._get_feedback_files():
+            try:
+                with open(feedback_file) as f:
+                    if any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
+                        basename = os.path.basename(feedback_file)
+                        branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
+                        result.append((feedback_file, branch))
+            except OSError:
+                continue
+        self._approved_feedback_cache = result
+        return result
 
     def _signal_open_bugs(self) -> list[dict]:
         """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
@@ -1181,22 +1200,14 @@ class StationManager:
             status_output = self._get_repo_status(default_dir)
             if status_output.strip():
                 # Main checkout has uncommitted changes — check for orphaned approved branches
-                for feedback_file in self._get_feedback_files():
-                    try:
-                        with open(feedback_file) as f:
-                            if any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
-                                # Found approved feedback — check if branch exists
-                                basename = os.path.basename(feedback_file)
-                                branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
-                                if self._git_has_branch(branch, cwd=default_dir):
-                                    if not self._dispatcher_orphan_skip_logged:
-                                        # Show branch and first uncommitted file for context
-                                        first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
-                                        activity(f"Dispatcher — skipped, {branch} approved work blocked by uncommitted: {first_file}")
-                                        self._dispatcher_orphan_skip_logged = True
-                                    return
-                    except OSError:
-                        continue
+                for feedback_file, branch in self._get_approved_feedback():
+                    if self._git_has_branch(branch, cwd=default_dir):
+                        if not self._dispatcher_orphan_skip_logged:
+                            # Show branch and first uncommitted file for context
+                            first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
+                            activity(f"Dispatcher — skipped, {branch} approved work blocked by uncommitted: {first_file}")
+                            self._dispatcher_orphan_skip_logged = True
+                        return
 
         # Clear the skip flag when we get past the orphan check (no longer blocked)
         self._dispatcher_orphan_skip_logged = False
@@ -1988,15 +1999,7 @@ class StationManager:
             if train.inspector is not None and train.branch
         }
 
-        for feedback_file in self._get_feedback_files():
-            try:
-                with open(feedback_file) as f:
-                    if not any(re.search(r'\bAPPROVED\b', line, re.I) for line in [f.readline() for _ in range(10)]):
-                        continue
-            except OSError:
-                continue
-            basename = os.path.basename(feedback_file)
-            branch = basename.replace("_feedback.md", "").replace("_", "/", 1)
+        for feedback_file, branch in self._get_approved_feedback():
 
             # Skip if inspector is actively working on this branch
             if branch in active_inspector_branches:
@@ -2190,6 +2193,7 @@ class StationManager:
                 self._backlog_cache.clear()
                 self._app_log_path_cache.clear()
                 self._feedback_files_cache = None
+                self._approved_feedback_cache = None
 
                 # Per-train phases
                 for train in self.trains:
