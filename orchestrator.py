@@ -270,6 +270,8 @@ class StationManager:
         self._feedback_files_cache: list[str] | None = None
         # Approved feedback cache: avoid redundant file parsing within a single tick
         self._approved_feedback_cache: list[tuple[str, str]] | None = None  # [(file_path, branch)]
+        # Feedback path cache: avoid redundant os.path.exists/glob calls within a single tick
+        self._feedback_path_cache: dict[str, str] = {}  # branch → feedback file path
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -288,17 +290,24 @@ class StationManager:
 
         Tries the canonical name first, then falls back to any *_feedback.md
         in the review dir (only one branch is in review at a time).
+        Cached per tick to avoid redundant filesystem calls.
         """
+        if branch in self._feedback_path_cache:
+            return self._feedback_path_cache[branch]
+
         canonical = os.path.join(
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
         )
         if os.path.exists(canonical):
+            self._feedback_path_cache[branch] = canonical
             return canonical
         matches = glob.glob(os.path.join(config.REVIEW_DIR, "*_feedback.md"))
         if len(matches) == 1:
+            self._feedback_path_cache[branch] = matches[0]
             return matches[0]
-        return canonical  # fall back to canonical (may not exist)
+        self._feedback_path_cache[branch] = canonical  # fall back to canonical (may not exist)
+        return canonical
 
     def _recover_orphaned_specs(self):
         """On startup, rename any .in_progress specs back to .json so they re-enter the pipeline.
@@ -2194,6 +2203,7 @@ class StationManager:
                 self._app_log_path_cache.clear()
                 self._feedback_files_cache = None
                 self._approved_feedback_cache = None
+                self._feedback_path_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
