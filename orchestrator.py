@@ -221,7 +221,9 @@ class StationManager:
         }
         self.last_merge_commit: str | None = None
         self._dispatcher_skip_logged_trains: set[str] = set()
-        self._orphan_merge_skip_logged: set[str] = set()  # branches with uncommitted changes already logged
+        # Load persisted orphan skip state to avoid re-logging same issues across restarts
+        self._orphan_skip_state_file = "/tmp/yamanote-orphan-skip-state.json"
+        self._orphan_merge_skip_logged: set[str] = self._load_orphan_skip_state()
         self._terminus_merge_deferred_logged: set[str] = set()  # train_ids with deferred merges already logged
 
         # Track spec timeout counts persistently across re-routes
@@ -283,6 +285,22 @@ class StationManager:
 
         # Recover orphaned .in_progress specs from previous runs
         self._recover_orphaned_specs()
+
+    def _load_orphan_skip_state(self) -> set[str]:
+        """Load persisted orphan skip state from disk to avoid re-logging across restarts."""
+        try:
+            with open(self._orphan_skip_state_file, "r") as f:
+                return set(json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return set()
+
+    def _save_orphan_skip_state(self):
+        """Persist orphan skip state to disk."""
+        try:
+            with open(self._orphan_skip_state_file, "w") as f:
+                json.dump(list(self._orphan_merge_skip_logged), f)
+        except OSError:
+            pass  # Non-critical, just log dedup state
 
     # ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -2011,6 +2029,7 @@ class StationManager:
             if not self._git_has_branch(branch, cwd=repo_dir):
                 os.remove(feedback_file)
                 self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking for deleted branch
+                self._save_orphan_skip_state()
                 activity(f"CLEANUP orphaned feedback: {os.path.basename(feedback_file)} (branch gone)")
                 continue
             # Check if working directory is clean before attempting orphan merge
@@ -2023,9 +2042,11 @@ class StationManager:
                     first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
                     activity(f"ORPHAN MERGE skipped — {branch}, uncommitted: {first_file}")
                     self._orphan_merge_skip_logged.add(branch)
+                    self._save_orphan_skip_state()
                 continue
             activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
             self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking on merge attempt
+            self._save_orphan_skip_state()
             merge_proc = subprocess.run(["git", "merge", "--no-ff", "-X", "theirs", branch],
                                       capture_output=True, text=True, cwd=repo_dir)
             if merge_proc.returncode == 0:
