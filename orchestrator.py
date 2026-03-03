@@ -262,6 +262,8 @@ class StationManager:
         self._git_status_cache: dict[str, str] = {}  # repo_dir → porcelain output
         # Git branch existence cache: avoid redundant branch checks within a single tick
         self._git_branch_cache: dict[tuple[str, str], bool] = {}  # (branch, cwd) → exists
+        # Backlog specs cache: avoid redundant file I/O within a single tick
+        self._backlog_cache: dict[str | None, list[str]] = {}  # complexity → spec paths
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -376,7 +378,12 @@ class StationManager:
 
         If complexity is given, filter to specs matching that complexity.
         Specs without a complexity field default to "high".
+        Cached per tick to avoid redundant file I/O.
         """
+        # Check cache first
+        if complexity in self._backlog_cache:
+            return self._backlog_cache[complexity]
+
         PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
         specs = sorted(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json")))
 
@@ -394,7 +401,9 @@ class StationManager:
                 except (json.JSONDecodeError, OSError):
                     if complexity == "high":
                         spec_data.append((1, path))  # default priority for malformed specs
-            return [path for _, path in sorted(spec_data)]
+            result = [path for _, path in sorted(spec_data)]
+            self._backlog_cache[complexity] = result
+            return result
 
         # No filtering — parse once for sorting only
         def sort_key(path: str) -> tuple[int, str]:
@@ -404,7 +413,9 @@ class StationManager:
                 return (PRIORITY_ORDER.get(data.get("priority", "medium"), 1), path)
             except (json.JSONDecodeError, OSError):
                 return (1, path)
-        return sorted(specs, key=sort_key)
+        result = sorted(specs, key=sort_key)
+        self._backlog_cache[complexity] = result
+        return result
 
     def _signal_open_bugs(self) -> list[dict]:
         """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
@@ -2156,9 +2167,10 @@ class StationManager:
                     time.sleep(config.TICK_INTERVAL)
                     continue
 
-                # Clear git caches at the start of each tick
+                # Clear per-tick caches at the start of each tick
                 self._git_status_cache.clear()
                 self._git_branch_cache.clear()
+                self._backlog_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
