@@ -1651,12 +1651,10 @@ class StationManager:
         # issue. Match on keywords longer than 4 chars to avoid generic words like "error".
         kw_parts = [w for w in summary.split('_') if len(w) > 4]
         if kw_parts:
-            try:
-                for fname in os.listdir(config.BACKLOG_DIR):
-                    if any(w in fname for w in kw_parts):
-                        return
-            except OSError:
-                pass
+            # Use cached backlog specs to avoid redundant os.listdir() call
+            for spec_path in self._backlog_specs():
+                if any(w in spec_path for w in kw_parts):
+                    return
             for train in self.trains:
                 if train.branch and any(w in train.branch for w in kw_parts):
                     return
