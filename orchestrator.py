@@ -2013,7 +2013,7 @@ class StationManager:
             if not self._git_has_branch(branch, cwd=repo_dir):
                 os.remove(feedback_file)
                 self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking for deleted branch
-                activity(f"CLEANUP orphaned feedback: {basename} (branch gone)")
+                activity(f"CLEANUP orphaned feedback: {os.path.basename(feedback_file)} (branch gone)")
                 continue
             # Check if working directory is clean before attempting orphan merge
             status_output = self._get_repo_status(repo_dir)
