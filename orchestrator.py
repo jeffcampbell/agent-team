@@ -223,7 +223,6 @@ class StationManager:
         self._dispatcher_skip_logged_trains: set[str] = set()
         self._orphan_merge_skip_logged: set[str] = set()  # branches with uncommitted changes already logged
         self._terminus_merge_deferred_logged: set[str] = set()  # train_ids with deferred merges already logged
-        self._dispatcher_orphan_skip_logged: bool = False  # dedupe "approved work blocked" messages
 
         # Track spec timeout counts persistently across re-routes
         self.spec_timeout_counts: dict[str, int] = {}
@@ -1224,15 +1223,8 @@ class StationManager:
                 # Main checkout has uncommitted changes — check for orphaned approved branches
                 for feedback_file, branch in self._get_approved_feedback():
                     if self._git_has_branch(branch, cwd=default_dir):
-                        if not self._dispatcher_orphan_skip_logged:
-                            # Show branch and first uncommitted file for context
-                            first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
-                            activity(f"Dispatcher — skipped, {branch} approved work blocked by uncommitted: {first_file}")
-                            self._dispatcher_orphan_skip_logged = True
+                        # Skip without logging — ORPHAN MERGE phase will log the same condition
                         return
-
-        # Clear the skip flag when we get past the orphan check (no longer blocked)
-        self._dispatcher_orphan_skip_logged = False
 
         # Don't generate new specs while any train has an active pipeline
         active_trains = [t for t in self.trains if t.branch]
