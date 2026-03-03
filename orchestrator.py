@@ -456,6 +456,10 @@ class StationManager:
         self._approved_feedback_cache = result
         return result
 
+    def _is_branch_approved(self, branch: str) -> bool:
+        """Check if a branch has approved feedback. Uses cached result to avoid redundant file I/O."""
+        return any(b == branch for _, b in self._get_approved_feedback())
+
     def _signal_open_bugs(self) -> list[dict]:
         """Return spec dicts for open Signal-authored bugs (both .json and .json.in_progress)."""
         bugs = []
@@ -1778,14 +1782,8 @@ class StationManager:
             return
 
         # Don't fire if the branch was already merged — let service_recovery handle it
-        feedback_path = self._feedback_path(branch)
-        if os.path.exists(feedback_path):
-            try:
-                with open(feedback_path) as f:
-                    if f.readline().strip() == "APPROVED":
-                        return
-            except OSError:
-                pass
+        if self._is_branch_approved(branch):
+            return
 
         max_edits = max(train.file_edits.values()) if train.file_edits else 0
         if max_edits < config.MAX_ENG_EDITS_BEFORE_RESET:
@@ -1855,22 +1853,10 @@ class StationManager:
         if not train.branch:
             return
 
+        if not self._is_branch_approved(train.branch):
+            return
+
         feedback_path = self._feedback_path(train.branch)
-        if not os.path.exists(feedback_path):
-            return
-
-        try:
-            with open(feedback_path) as f:
-                # Check first 5 lines for APPROVED (handle markdown formatting variations)
-                approved = any(
-                    re.search(r'\bAPPROVED\b', line.strip(), re.IGNORECASE)
-                    for line in [f.readline() for _ in range(5)]
-                )
-        except OSError:
-            return
-
-        if not approved:
-            return
 
         repo_dir = train.repo_dir or train.working_dir
 
