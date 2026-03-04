@@ -1273,21 +1273,26 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
-        # Include recent git history (last 90 min) so dispatcher can see what merged recently
-        git_history = self._git("log", "--format=%h %ar %s", "--since=90 minutes ago", cwd=default_dir) or "(no git history)"
-        # Check if a merge just happened (within last 60 minutes)
+        # Get last 10 commits with full info (single call to serve both history and merge check)
+        full_log = self._git("log", "--format=%ct %h %ar %s", "-10", cwd=default_dir)
+        git_history_lines = []
         recent_merge_warning = ""
-        recent_commit = self._git("log", "-1", "--format=%ct %s", cwd=default_dir)
-        if recent_commit:
-            parts = recent_commit.split(" ", 1)
-            if len(parts) == 2:
-                commit_time, commit_msg = parts
-                try:
-                    age_seconds = now - int(commit_time)
-                    if age_seconds < 3600 and "Merge branch" in commit_msg:
-                        recent_merge_warning = "\n\n⚠️ A feature branch was just merged. Before creating a spec, carefully verify that issues mentioned in assessment.md were NOT already addressed in the commits above. Do not duplicate work that was just completed."
-                except ValueError:
-                    pass
+        if full_log:
+            for idx, line in enumerate(full_log.splitlines()):
+                parts = line.split(" ", 3)
+                if len(parts) >= 4:
+                    commit_time, commit_hash, rel_time, rest = parts[0], parts[1], parts[2], parts[3]
+                    try:
+                        age_seconds = now - int(commit_time)
+                        # Include commits from last 90 minutes in git history
+                        if age_seconds < 5400:  # 90 minutes = 5400 seconds
+                            git_history_lines.append(f"{commit_hash} {rel_time} {rest}")
+                        # Check most recent commit for merge warning (first line only)
+                        if idx == 0 and age_seconds < 3600 and "Merge branch" in rest:
+                            recent_merge_warning = "\n\n⚠️ A feature branch was just merged. Before creating a spec, carefully verify that issues mentioned in assessment.md were NOT already addressed in the commits above. Do not duplicate work that was just completed."
+                    except ValueError:
+                        pass
+        git_history = "\n".join(git_history_lines) if git_history_lines else "(no git history)"
         # Check if today's game already exists
         today_date = time.strftime("%Y-%m-%d")
         today_game_dir = os.path.join(default_dir, "games", today_date)
