@@ -355,15 +355,16 @@ class StationManager:
             # Check if this spec has active CHANGES_REQUESTED or APPROVED feedback
             has_changes_requested = False
             has_approved = False
+            feedback_content = None  # Cache feedback to avoid redundant file read later
             if title:
                 branch_name = f"feature/{title}"
                 feedback_path = self._feedback_path(branch_name)
                 if os.path.exists(feedback_path):
                     try:
                         with open(feedback_path) as f:
-                            content = f.read()
-                            has_changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
-                            has_approved = bool(re.search(r'\bAPPROVED\b', content, re.IGNORECASE))
+                            feedback_content = f.read()
+                            has_changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', feedback_content, re.IGNORECASE))
+                            has_approved = bool(re.search(r'\bAPPROVED\b', feedback_content, re.IGNORECASE))
                     except OSError:
                         pass
 
@@ -390,18 +391,14 @@ class StationManager:
                             activity(f"CLEANUP stale worktree: {wt_path}")
 
             # Clean up stale feedback file for this branch (unless it's approved or has changes requested)
-            if title:
+            if title and feedback_content is not None:
+                # Reuse cached feedback content from earlier read to avoid redundant file I/O
                 branch_name = f"feature/{title}"
                 feedback_path = self._feedback_path(branch_name)
                 if os.path.exists(feedback_path):
                     # Don't delete approved or changes_requested feedback — let workflow phases handle them
-                    try:
-                        with open(feedback_path) as f:
-                            content = f.read()
-                            approved = bool(re.search(r'\bAPPROVED\b', content, re.IGNORECASE))
-                            changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', content, re.IGNORECASE))
-                    except OSError:
-                        approved = changes_requested = False
+                    approved = bool(re.search(r'\bAPPROVED\b', feedback_content, re.IGNORECASE))
+                    changes_requested = bool(re.search(r'\bCHANGES_REQUESTED\b', feedback_content, re.IGNORECASE))
 
                     if not approved and not changes_requested:
                         os.remove(feedback_path)
