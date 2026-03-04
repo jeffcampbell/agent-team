@@ -245,6 +245,8 @@ class StationManager:
 
         # Track spec timeout counts persistently across re-routes
         self.spec_timeout_counts: dict[str, int] = {}
+        # Track spec cooldowns globally (prevents any train from picking up a cooling spec)
+        self.spec_cooldown_until: dict[str, float] = {}
 
         # Cost guardrail: track agent launches in a rolling window
         self.launch_times: deque[float] = deque()
@@ -1166,6 +1168,7 @@ class StationManager:
                     os.remove(in_progress)
                 # Clean up persistent timeout tracking
                 self.spec_timeout_counts.pop(train.spec_path, None)
+                self.spec_cooldown_until.pop(train.spec_path, None)
                 timeout_file = train.spec_path + ".timeouts"
                 if os.path.exists(timeout_file):
                     os.remove(timeout_file)
@@ -1190,8 +1193,8 @@ class StationManager:
                 if train.branch and train.repo_dir and self._git_has_branch(train.branch, cwd=train.repo_dir):
                     self._git("branch", "-D", train.branch, cwd=train.repo_dir)
                 train.reset_pipeline()
-                # Brief pause to let git fully release the branch before retry
-                train.conductor_cooldown_until = time.time() + 12
+                # Brief pause to let git fully release the branch before retry (spec-level cooldown)
+                self.spec_cooldown_until[train.spec_path] = time.time() + 12
 
     def _find_spec_for_train(self, train: Train) -> str | None:
         """Find a suitable spec for this train based on complexity.
@@ -1202,17 +1205,21 @@ class StationManager:
         # With worktrees, multiple trains can work on the same project.
         # Collision is prevented by spec rename to .in_progress on pickup.
 
+        now = time.time()
+
         # Primary complexity
         primary = self._backlog_specs(complexity=train.complexity)
-        if primary:
-            return primary[0]
+        for spec in primary:
+            if self.spec_cooldown_until.get(spec, 0) <= now:
+                return spec
 
         # Fallback: regular trains can pick medium then low specs; express never picks high
         if train.train_type == "regular":
             for fallback_complexity in ("medium", "low"):
                 fallback = self._backlog_specs(complexity=fallback_complexity)
-                if fallback:
-                    return fallback[0]
+                for spec in fallback:
+                    if self.spec_cooldown_until.get(spec, 0) <= now:
+                        return spec
 
         return None
 
