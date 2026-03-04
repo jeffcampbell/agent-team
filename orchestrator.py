@@ -1267,15 +1267,17 @@ class StationManager:
                 # Main checkout has uncommitted changes — check for orphaned approved branches
                 for feedback_file, branch in self._get_approved_feedback():
                     if self._git_has_branch(branch, cwd=default_dir):
-                        # Skip without logging — ORPHAN MERGE phase will log the same condition
+                        if branch not in self._orphan_merge_skip_logged:
+                            first_file = status_output.split('\n')[0][3:]
+                            activity(f"Dispatcher — blocked by dirty checkout + orphan {branch}: {first_file}")
                         return
 
         # Don't generate new specs while any train has an active pipeline
         active_trains = [t for t in self.trains if t.branch]
         if active_trains:
-            trains_detail = ", ".join(f"{t.train_id}:{t.branch}" for t in active_trains)
             key = frozenset(t.train_id for t in active_trains)
             if key != self._dispatcher_skip_logged_trains:
+                trains_detail = ", ".join(f"{t.train_id}:{t.branch}" for t in active_trains)
                 activity(f"Dispatcher — skipped, pipeline active on {trains_detail}")
                 self._dispatcher_skip_logged_trains = key
             return
@@ -1386,8 +1388,9 @@ class StationManager:
             activity(f"INVALID SPEC — {os.path.basename(spec_path)} failed to parse: {e}")
             log.warning("Bad spec file %s: %s", spec_path, e)
             # Remove malformed spec to prevent it from blocking the queue
-            os.remove(spec_path)
-            self._backlog_cache.clear()  # invalidate cache after removing spec
+            if os.path.exists(spec_path):
+                os.remove(spec_path)
+                self._backlog_cache.clear()  # invalidate cache after removing spec
             return
 
         # Read working_dir from spec, default to configured project
@@ -2071,18 +2074,26 @@ class StationManager:
                 self._save_orphan_skip_state()
                 activity(f"CLEANUP orphaned feedback: {os.path.basename(feedback_file)} (branch gone)")
                 continue
-            # Check if working directory is clean before attempting orphan merge
+            # Auto-stash dirty checkout before orphan merge to prevent deadlock
             status_output = self._get_repo_status(repo_dir)
+            stashed = False
             if status_output.strip():
-                # Working directory has uncommitted changes, skip orphan merge
-                # The regular track will handle the merge when it reaches terminus
-                if branch not in self._orphan_merge_skip_logged:
-                    # Show first uncommitted file for context
-                    first_file = status_output.split('\n')[0][3:]  # strip status prefix (e.g., " M ")
-                    activity(f"ORPHAN MERGE skipped — {branch}, uncommitted: {first_file}")
-                    self._orphan_merge_skip_logged.add(branch)
-                    self._save_orphan_skip_state()
-                continue
+                stash_msg = f"yamanote-auto-{branch}"
+                stash_proc = subprocess.run(
+                    ["git", "stash", "push", "-u", "-m", stash_msg],
+                    capture_output=True, text=True, cwd=repo_dir
+                )
+                if stash_proc.returncode != 0:
+                    # Stash failed — fall back to skip behavior
+                    if branch not in self._orphan_merge_skip_logged:
+                        first_file = status_output.split('\n')[0][3:]
+                        activity(f"ORPHAN MERGE skipped — {branch}, stash failed: {first_file}")
+                        self._orphan_merge_skip_logged.add(branch)
+                        self._save_orphan_skip_state()
+                    continue
+                stashed = True
+                self._git_status_cache.pop(repo_dir, None)
+                activity(f"ORPHAN MERGE — stashed dirty checkout for {branch}")
             activity(f"ORPHAN MERGE — {branch} has APPROVED feedback, merging now")
             self._orphan_merge_skip_logged.discard(branch)  # Clear skip tracking on merge attempt
             self._save_orphan_skip_state()
@@ -2133,6 +2144,19 @@ class StationManager:
             else:
                 activity(f"MERGE [orphan] — FAILED: {merge_proc.stderr.strip()}")
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_dir)
+
+            # Restore stashed changes after merge (success or failure)
+            if stashed:
+                pop_proc = subprocess.run(
+                    ["git", "stash", "pop"],
+                    capture_output=True, text=True, cwd=repo_dir
+                )
+                if pop_proc.returncode != 0:
+                    # Pop conflicted — drop the stash; merged branch content supersedes stale artifacts
+                    subprocess.run(["git", "stash", "drop"], capture_output=True, text=True, cwd=repo_dir)
+                    subprocess.run(["git", "checkout", "--", "."], capture_output=True, text=True, cwd=repo_dir)
+                    activity(f"ORPHAN MERGE — stash pop conflicted, dropped stale changes")
+                self._git_status_cache.pop(repo_dir, None)
 
     def _log_ops_summary(self, output: str):
         """Extract and log the ops agent's activity summary with visual breakers."""
