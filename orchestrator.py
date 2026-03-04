@@ -1277,6 +1277,9 @@ class StationManager:
         """If backlog is empty and no Dispatcher running, launch Dispatcher agent."""
         if self._is_agent_active("dispatcher"):
             return
+        # Skip if SERVICE SUSPENDED was just triggered by an arrival
+        if time.time() < self.sleep_until:
+            return
         # Don't log intent if Dispatcher is in cooldown — _launch_agent would silently skip
         if "dispatcher" in self.agent_cooldowns and time.time() < self.agent_cooldowns["dispatcher"]:
             return
@@ -2161,6 +2164,9 @@ class StationManager:
         """Periodically analyze orchestrator activity and implement small improvements."""
         ops_agent = self.active_agents.get("ops")
         if self._is_agent_active("ops"):
+            return
+        # Skip if SERVICE SUSPENDED was just triggered by an arrival
+        if time.time() < self.sleep_until:
             return
 
         # If ops just completed, log summary and check for new commits → restart
