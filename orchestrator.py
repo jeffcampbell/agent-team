@@ -1387,6 +1387,7 @@ class StationManager:
             log.warning("Bad spec file %s: %s", spec_path, e)
             # Remove malformed spec to prevent it from blocking the queue
             os.remove(spec_path)
+            self._backlog_cache.clear()  # invalidate cache after removing spec
             return
 
         # Read working_dir from spec, default to configured project
@@ -1398,16 +1399,19 @@ class StationManager:
         if self._is_self_project(working_dir):
             activity(f"RESTRICTED spec {os.path.basename(spec_path)} — targets Yamanote itself. Removing.")
             os.remove(spec_path)
+            self._backlog_cache.clear()  # invalidate cache after removing spec
             return
 
         # Validate working_dir exists and is under Development dir
         if not os.path.isdir(working_dir):
             activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir {working_dir} does not exist. Removing.")
             os.remove(spec_path)
+            self._backlog_cache.clear()  # invalidate cache after removing spec
             return
         if not os.path.realpath(working_dir).startswith(self._dev_dir_realpath):
             activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir outside {config.DEVELOPMENT_DIR}. Removing.")
             os.remove(spec_path)
+            self._backlog_cache.clear()  # invalidate cache after removing spec
             return
 
         spec_title = spec_data.get("title", "untitled")
@@ -1461,12 +1465,14 @@ class StationManager:
                     return
                 train.working_dir = worktree_path
                 os.rename(spec_path, spec_path + ".in_progress")
+                self._backlog_cache.clear()  # invalidate cache after renaming spec
                 return
 
             if has_approved:
                 # Approved work awaiting merge — skip this spec, let ORPHAN MERGE handle it
                 activity(f"Conductor:{train.train_id} — branch {branch_name} approved, skipping spec (orphan merge will handle)")
                 os.remove(spec_path)
+                self._backlog_cache.clear()  # invalidate cache after removing spec
                 train.reset_pipeline()
                 return
 
@@ -1481,6 +1487,7 @@ class StationManager:
                 return
             train.working_dir = worktree_path
             os.rename(spec_path, spec_path + ".in_progress")
+            self._backlog_cache.clear()  # invalidate cache after renaming spec
             return
 
         # Create worktree with the feature branch
@@ -1516,6 +1523,7 @@ class StationManager:
             return
         train.edits_tallied = False
         os.rename(spec_path, spec_path + ".in_progress")
+        self._backlog_cache.clear()  # invalidate cache after renaming spec
 
     def _train_phase_inspector(self, train: Train):
         """If Conductor finished on this train and branch has changes, launch Inspector."""
