@@ -136,7 +136,9 @@ Instructions:
 2. If today's game directory does NOT exist yet:
    - Generate a fresh game concept. Think of a fun, self-contained game that can be built
      in one day within PICO-8's constraints (128x128, 16 colors, 8192 tokens, 6 buttons).
-   - Pick a clear theme and core mechanic (platformer, puzzle, shooter, arcade, etc.).
+   - Pick a clear theme and ONE core mechanic (platformer, puzzle, shooter, arcade, etc.).
+   - Focus on one mechanic, polished — avoid feature-heavy designs that bloat token count.
+     Games must fit in 8192 tokens. Keep concepts modest: a tight core loop beats many features.
    - Define: controls, win/lose conditions, scoring, and 2-3 key gameplay elements.
    - The spec description must be detailed enough for a builder to implement from scratch.
 
@@ -221,8 +223,12 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
    - Add _log() calls for state changes, score events, player actions
    - MUST include a `__label__` section (128x128 pixel art, even if minimal) — required for HTML export
    - MUST include a `__gfx__` section (even if empty/minimal) — required for valid cartridge
-7. Before committing, verify:
-   - Token count stays under 8192 (count significant tokens, not comments/whitespace)
+7. Before committing, verify token count:
+   Run: `python3 tools/p8tokens.py games/YYYY-MM-DD/game.p8`
+   If output shows "OVER LIMIT", you MUST refactor to reduce tokens before committing.
+   Token-saving tips: use `.` member access over `["key"]`, combine short functions,
+   shorten variable names, use `local` and `end` (they're free), remove dead code.
+   Also verify:
    - All btn() calls use test_input() wrapper
    - State machine covers menu, play, and gameover states
    - _log() calls exist for key events
@@ -265,8 +271,12 @@ All file reads, edits, and git operations MUST stay inside {working_dir}.
 {reviewer_feedback}
 
 5. Address each issue raised by the inspector.
-6. After fixing, verify:
-   - Token count stays under 8192
+6. After fixing, verify token count:
+   Run: `python3 tools/p8tokens.py games/YYYY-MM-DD/game.p8`
+   If output shows "OVER LIMIT", you MUST refactor to reduce tokens before committing.
+   Token-saving tips: use `.` member access over `["key"]`, combine short functions,
+   shorten variable names, use `local` and `end` (they're free), remove dead code.
+   Also verify:
    - All btn() calls use test_input() wrapper
    - State machine is intact (menu, play, gameover)
    - _log() calls cover the fixed/changed behavior
@@ -308,7 +318,8 @@ The review feedback directory is: {review_dir}
    b. Bounds checking — do sprites/objects stay within 0-127 or handle wrapping?
    c. State transitions — can the player get stuck? Are all transitions reachable?
    d. Edge cases — what happens at score 0? At max values? With rapid input?
-   e. Token budget — is the code likely under the 8192 token limit?
+   e. Token budget — run `python3 tools/p8tokens.py games/YYYY-MM-DD/game.p8` to get exact count.
+      Token count over 8192 = **Critical** severity (game cannot ship over limit).
 
 7. **Gameplay analysis (static):**
    a. Do the controls match what the spec describes?
