@@ -295,6 +295,9 @@ class StationManager:
         # Gitignore check cache: avoid redundant .gitignore reads during worktree creation
         self._gitignore_has_worktrees_cache: dict[str, bool] = {}  # repo_dir → has .worktrees/ entry
 
+        # Cached realpath for DEVELOPMENT_DIR: avoid redundant os.path.realpath() calls in spec validation
+        self._dev_dir_realpath: str = os.path.realpath(config.DEVELOPMENT_DIR)
+
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
 
@@ -1400,7 +1403,7 @@ class StationManager:
             activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir {working_dir} does not exist. Removing.")
             os.remove(spec_path)
             return
-        if not os.path.realpath(working_dir).startswith(os.path.realpath(config.DEVELOPMENT_DIR)):
+        if not os.path.realpath(working_dir).startswith(self._dev_dir_realpath):
             activity(f"RESTRICTED spec {os.path.basename(spec_path)} — working_dir outside {config.DEVELOPMENT_DIR}. Removing.")
             os.remove(spec_path)
             return
