@@ -24,12 +24,29 @@ log = logging.getLogger("orchestrator")
 
 # ─── Activity log ────────────────────────────────────────────────────────────
 
+_ACTIVITY_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_ACTIVITY_LOG_BACKUP_COUNT = 2
+
+
+def _rotate_activity_log():
+    """Rotate activity.log -> activity.log.1 -> activity.log.2 (oldest dropped)."""
+    for i in range(_ACTIVITY_LOG_BACKUP_COUNT, 0, -1):
+        dst = f"{config.ACTIVITY_LOG}.{i}"
+        src = f"{config.ACTIVITY_LOG}.{i - 1}" if i > 1 else config.ACTIVITY_LOG
+        if os.path.exists(dst):
+            os.remove(dst)
+        if os.path.exists(src):
+            os.rename(src, dst)
+
+
 def activity(msg: str):
     """Append a pretty-printed line to the activity log and also log it."""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}]  {msg}\n"
     log.info(msg)
     try:
+        if os.path.exists(config.ACTIVITY_LOG) and os.path.getsize(config.ACTIVITY_LOG) > _ACTIVITY_LOG_MAX_BYTES:
+            _rotate_activity_log()
         with open(config.ACTIVITY_LOG, "a") as f:
             f.write(line)
     except OSError:
@@ -2233,23 +2250,20 @@ class StationManager:
 
                 # Deferred ops restart — fire once all conductors have finished AND inspectors launched
                 if self.restart_pending:
-                    conducting = any(
-                        t.conductor is not None and t.conductor.proc is not None
-                        and t.conductor.proc.poll() is None
-                        for t in self.trains
-                    )
-                    # Wait for inspector launch on trains that just finished conductor
-                    waiting_for_inspector = any(
-                        t.branch and t.conductor is None and t.inspector is None
-                        and not os.path.exists(self._feedback_path(t.branch))
-                        for t in self.trains
-                    )
-                    # Also check if any inspector is currently running
-                    inspecting = any(
-                        t.inspector is not None and t.inspector.proc is not None
-                        and t.inspector.proc.poll() is None
-                        for t in self.trains
-                    )
+                    # Single loop to check all three conditions (was 3 separate loops)
+                    conducting = False
+                    waiting_for_inspector = False
+                    inspecting = False
+                    for t in self.trains:
+                        if t.conductor is not None and t.conductor.proc is not None and t.conductor.proc.poll() is None:
+                            conducting = True
+                        if t.branch and t.conductor is None and t.inspector is None and not os.path.exists(self._feedback_path(t.branch)):
+                            waiting_for_inspector = True
+                        if t.inspector is not None and t.inspector.proc is not None and t.inspector.proc.poll() is None:
+                            inspecting = True
+                        # Early exit if all conditions are true
+                        if conducting and waiting_for_inspector and inspecting:
+                            break
                     if not conducting and not waiting_for_inspector and not inspecting:
                         self._request_self_restart()
 
