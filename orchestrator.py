@@ -275,6 +275,8 @@ class StationManager:
         self._feedback_path_cache: dict[str, str] = {}  # branch → feedback file path
         # Signal open bugs cache: avoid redundant backlog parsing within a single tick
         self._signal_open_bugs_cache: list[dict] | None = None
+        # Gitignore check cache: avoid redundant .gitignore reads during worktree creation
+        self._gitignore_has_worktrees_cache: dict[str, bool] = {}  # repo_dir → has .worktrees/ entry
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -661,19 +663,21 @@ class StationManager:
         os.makedirs(worktree_base, exist_ok=True)
         worktree_path = os.path.join(worktree_base, train_id)
 
-        # Ensure .worktrees/ is in the project's .gitignore
+        # Ensure .worktrees/ is in the project's .gitignore (cached per tick to avoid redundant file reads)
         gitignore_path = os.path.join(repo_dir, ".gitignore")
         ignore_entry = ".worktrees/"
-        needs_add = True
-        if os.path.exists(gitignore_path):
-            with open(gitignore_path) as f:
-                for line in f:
-                    if line.strip() == ignore_entry:
-                        needs_add = False
-                        break
-        if needs_add:
-            with open(gitignore_path, "a") as f:
-                f.write(f"\n{ignore_entry}\n")
+        if repo_dir not in self._gitignore_has_worktrees_cache:
+            needs_add = True
+            if os.path.exists(gitignore_path):
+                with open(gitignore_path) as f:
+                    for line in f:
+                        if line.strip() == ignore_entry:
+                            needs_add = False
+                            break
+            if needs_add:
+                with open(gitignore_path, "a") as f:
+                    f.write(f"\n{ignore_entry}\n")
+            self._gitignore_has_worktrees_cache[repo_dir] = True
 
         # Clean up stale worktree at this path if it exists
         if os.path.isdir(worktree_path):
@@ -2216,6 +2220,7 @@ class StationManager:
                 self._approved_feedback_cache = None
                 self._feedback_path_cache.clear()
                 self._signal_open_bugs_cache = None
+                self._gitignore_has_worktrees_cache.clear()
 
                 # Per-train phases
                 for train in self.trains:
