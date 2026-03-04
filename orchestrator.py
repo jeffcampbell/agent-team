@@ -297,6 +297,8 @@ class StationManager:
 
         # Cached realpath for DEVELOPMENT_DIR: avoid redundant os.path.realpath() calls in spec validation
         self._dev_dir_realpath: str = os.path.realpath(config.DEVELOPMENT_DIR)
+        # Cached realpath for SELF_PROJECT_DIR: avoid redundant os.path.realpath() calls in self-project guard
+        self._self_project_realpath: str = os.path.realpath(config.SELF_PROJECT_DIR)
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
@@ -950,7 +952,7 @@ class StationManager:
         """Return True if the spec targets the Yamanote orchestrator itself."""
         if not working_dir:
             return False
-        return os.path.realpath(working_dir) == os.path.realpath(config.SELF_PROJECT_DIR)
+        return os.path.realpath(working_dir) == self._self_project_realpath
 
     # ─── Per-train agent helpers ─────────────────────────────────────────
 
