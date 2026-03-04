@@ -738,10 +738,10 @@ class StationManager:
                 # Directory exists but isn't registered with git — remove it directly
                 shutil.rmtree(worktree_path, ignore_errors=True)
                 activity(f"WORKTREE force-removed (was not registered with git): {worktree_path}")
+                # Prune stale references only after manual removal
+                self._git("worktree", "prune", cwd=repo_dir)
             else:
                 activity(f"WORKTREE removed: {worktree_path}")
-        # Prune any stale worktree references
-        self._git("worktree", "prune", cwd=repo_dir)
 
     def _git_has_branch(self, branch: str, cwd: str | None = None) -> bool:
         """Check if branch exists, cached per tick to avoid redundant calls."""
