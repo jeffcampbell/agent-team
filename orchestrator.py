@@ -767,6 +767,33 @@ class StationManager:
     def _git_last_commit(self, cwd: str | None = None) -> str:
         return self._git("rev-parse", "HEAD", cwd=cwd)
 
+    def _restart_service(self, repo_dir: str):
+        """Restart the target service after a merge, handling errors gracefully."""
+        if config.SERVICE_RESTART_CMD:
+            try:
+                result = subprocess.run(
+                    config.SERVICE_RESTART_CMD,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=config.SERVICE_RESTART_TIMEOUT
+                )
+                if result.returncode == 0:
+                    activity("SERVICE restarted successfully")
+                else:
+                    error_output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
+                    error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
+                    if error_msg.startswith("RUNNING:"):
+                        activity(f"SERVICE: {error_msg[8:].strip()}")
+                    else:
+                        activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
+            except subprocess.TimeoutExpired:
+                activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
+        elif config.RAILWAY_PROJECT:
+            self._deploy_to_railway(cwd=repo_dir)
+        else:
+            activity("SERVICE restart skipped (no deployment method configured)")
+
     def _find_app_log(self, project_dir: str) -> str | None:
         """Resolve the project's application log file, cached per tick to avoid redundant glob/mtime calls.
 
@@ -2001,32 +2028,7 @@ class StationManager:
         if self._git_has_branch(train.branch, cwd=repo_dir):
             self._git("branch", "-D", train.branch, cwd=repo_dir)
 
-        if config.SERVICE_RESTART_CMD:
-            try:
-                result = subprocess.run(
-                    config.SERVICE_RESTART_CMD,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=config.SERVICE_RESTART_TIMEOUT
-                )
-                if result.returncode == 0:
-                    activity("SERVICE restarted successfully")
-                else:
-                    # Extract first line only to avoid multi-line error output cluttering the log
-                    error_output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
-                    error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
-                    # "RUNNING: ..." indicates service already running (not an error)
-                    if error_msg.startswith("RUNNING:"):
-                        activity(f"SERVICE: {error_msg[8:].strip()}")
-                    else:
-                        activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
-            except subprocess.TimeoutExpired:
-                activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
-        elif config.RAILWAY_PROJECT:
-            self._deploy_to_railway(cwd=repo_dir)
-        else:
-            activity("SERVICE restart skipped (no deployment method configured)")
+        self._restart_service(repo_dir)
 
         # Remove both .in_progress and original spec file to prevent duplicate runs
         if train.spec_path:
@@ -2117,30 +2119,7 @@ class StationManager:
                         train.reset_pipeline()
 
                 # Restart service after orphan merge (matching TERMINUS merge behavior)
-                if config.SERVICE_RESTART_CMD:
-                    try:
-                        result = subprocess.run(
-                            config.SERVICE_RESTART_CMD,
-                            shell=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=config.SERVICE_RESTART_TIMEOUT
-                        )
-                        if result.returncode == 0:
-                            activity("SERVICE restarted successfully")
-                        else:
-                            error_output = result.stderr.strip() if result.stderr.strip() else result.stdout.strip()
-                            error_msg = error_output.split('\n')[0] if error_output else 'unknown error'
-                            if error_msg.startswith("RUNNING:"):
-                                activity(f"SERVICE: {error_msg[8:].strip()}")
-                            else:
-                                activity(f"SERVICE restart failed (rc={result.returncode}): {error_msg}")
-                    except subprocess.TimeoutExpired:
-                        activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
-                elif config.RAILWAY_PROJECT:
-                    self._deploy_to_railway(cwd=repo_dir)
-                else:
-                    activity("SERVICE restart skipped (no deployment method configured)")
+                self._restart_service(repo_dir)
             else:
                 activity(f"MERGE [orphan] — FAILED: {merge_proc.stderr.strip()}")
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=repo_dir)
