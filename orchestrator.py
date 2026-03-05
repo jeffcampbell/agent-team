@@ -1192,9 +1192,11 @@ class StationManager:
                 # Clean up the feature branch so retry starts fresh (prevents orphan recovery confusion)
                 if train.branch and train.repo_dir and self._git_has_branch(train.branch, cwd=train.repo_dir):
                     self._git("branch", "-D", train.branch, cwd=train.repo_dir)
+                # Save spec path before reset clears it
+                spec_path_for_cooldown = train.spec_path
                 train.reset_pipeline()
                 # Brief pause to let git fully release the branch before retry (spec-level cooldown)
-                self.spec_cooldown_until[train.spec_path] = time.time() + 12
+                self.spec_cooldown_until[spec_path_for_cooldown] = time.time() + 12
 
     def _find_spec_for_train(self, train: Train) -> str | None:
         """Find a suitable spec for this train based on complexity.
