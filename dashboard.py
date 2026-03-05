@@ -54,6 +54,40 @@ def _ensure_game_export(game_dir):
     return False
 
 
+_CLICK_TO_PLAY = b"""<style>
+#p8_overlay{position:fixed;top:0;left:0;width:100%;height:100%;
+background:rgba(0,0,0,.75);z-index:999;display:flex;align-items:center;
+justify-content:center;cursor:pointer;flex-direction:column;gap:12px}
+#p8_overlay svg{width:64px;height:64px;filter:drop-shadow(0 0 12px rgba(154,205,50,.4))}
+#p8_overlay span{color:#999;font:600 11px/1 Helvetica,Arial,sans-serif;
+letter-spacing:3px;text-transform:uppercase}
+</style>
+<div id="p8_overlay" onclick="
+  this.remove();
+  p8_create_audio_context();
+  p8_run_cart();
+"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="none"
+stroke="#9acd32" stroke-width="2"/><polygon points="26,20 26,44 46,32"
+fill="#9acd32"/></svg><span>Click to play</span></div>
+</body>"""
+
+
+def _patch_autoplay(data):
+    """Patch PICO-8 exported HTML for click-to-play overlay in iframe embeds.
+
+    Injects a play overlay that guarantees a user gesture before starting,
+    so the AudioContext is created with full permission (audio works immediately).
+    """
+    data = data.replace(b"</body>", _CLICK_TO_PLAY)
+    return data
+
+
+def _game_dir_for_date(date_str):
+    """Return the game directory path for a given YYYY-MM-DD date string."""
+    project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+    return os.path.join(project_dir, "games", date_str)
+
+
 def _fetch_game_preview():
     """Return metadata about today's game."""
     game_dir, today = _today_game_dir()
@@ -78,13 +112,57 @@ def _fetch_game_preview():
 
     return result
 
-# Cache the HTML file at import time (zero disk I/O per request)
-_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+
+def _list_all_games():
+    """Return a list of all game dates with metadata, newest first."""
+    project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+    games_root = os.path.join(project_dir, "games")
+    results = []
+    try:
+        entries = sorted(os.listdir(games_root), reverse=True)
+    except OSError:
+        return results
+    for entry in entries:
+        # Validate YYYY-MM-DD format
+        if len(entry) != 10 or entry[4] != '-' or entry[7] != '-':
+            continue
+        game_dir = os.path.join(games_root, entry)
+        if not os.path.isdir(game_dir):
+            continue
+        p8_path = os.path.join(game_dir, "game.p8")
+        if not os.path.isfile(p8_path):
+            continue
+        html_path = os.path.join(game_dir, "game.html")
+        assessment_path = os.path.join(game_dir, "assessment.md")
+        snippet = None
+        try:
+            with open(assessment_path, "r") as f:
+                text = f.read().strip()
+                snippet = text[:200] if text else None
+        except (OSError, FileNotFoundError):
+            pass
+        results.append({
+            "date": entry,
+            "has_html": os.path.isfile(html_path),
+            "assessment_snippet": snippet,
+        })
+    return results
+
+# Cache HTML files at import time (zero disk I/O per request)
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_HTML_PATH = os.path.join(_DIR, "dashboard.html")
 try:
     with open(_HTML_PATH, "rb") as _f:
         _HTML_BYTES = _f.read()
 except FileNotFoundError:
     _HTML_BYTES = b"<h1>dashboard.html not found</h1>"
+
+_GAMES_HTML_PATH = os.path.join(_DIR, "games.html")
+try:
+    with open(_GAMES_HTML_PATH, "rb") as _f:
+        _GAMES_HTML_BYTES = _f.read()
+except FileNotFoundError:
+    _GAMES_HTML_BYTES = b"<h1>games.html not found</h1>"
 
 
 def _agent_status_dict(agent, cooldown_until, failures, now):
@@ -390,6 +468,14 @@ def _make_handler(station_manager):
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+            elif self.path == "/api/games":
+                games = _list_all_games()
+                payload = json.dumps(games).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
             elif self.path in ("/game/game.html", "/game/game.js"):
                 game_dir, _ = _today_game_dir()
                 filename = "game.html" if self.path.endswith(".html") else "game.js"
@@ -398,9 +484,8 @@ def _make_handler(station_manager):
                 if os.path.isfile(filepath):
                     with open(filepath, "rb") as f:
                         data = f.read()
-                    # Patch HTML to auto-play in dashboard embed
                     if filename == "game.html":
-                        data = data.replace(b"p8_autoplay = false", b"p8_autoplay = true")
+                        data = _patch_autoplay(data)
                     ctype = "text/html; charset=utf-8" if filename == "game.html" else "application/javascript"
                     self.send_response(200)
                     self.send_header("Content-Type", ctype)
@@ -412,6 +497,50 @@ def _make_handler(station_manager):
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b"Game not exported yet")
+            elif self.path.startswith("/game/") and self.path.count("/") == 3:
+                # /game/<date>/game.html or /game/<date>/game.js
+                parts = self.path.split("/")  # ['', 'game', '<date>', 'game.html|game.js']
+                date_str = parts[2]
+                filename = parts[3]
+                # Validate date format and filename
+                if (len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-'
+                        and filename in ("game.html", "game.js", "game.p8")):
+                    game_dir = _game_dir_for_date(date_str)
+                    if filename != "game.p8":
+                        _ensure_game_export(game_dir)
+                    filepath = os.path.join(game_dir, filename)
+                    if os.path.isfile(filepath):
+                        with open(filepath, "rb") as f:
+                            data = f.read()
+                        if filename == "game.html":
+                            data = _patch_autoplay(data)
+                            ctype = "text/html; charset=utf-8"
+                        elif filename == "game.p8":
+                            ctype = "application/octet-stream"
+                        else:
+                            ctype = "application/javascript"
+                        self.send_response(200)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header("Cache-Control", "no-cache")
+                        if filename == "game.p8":
+                            self.send_header("Content-Disposition",
+                                             'attachment; filename="game-' + date_str + '.p8"')
+                        self.end_headers()
+                        self.wfile.write(data)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                        self.wfile.write(b"Game not exported yet")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            elif self.path == "/games":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(_GAMES_HTML_BYTES)))
+                self.end_headers()
+                self.wfile.write(_GAMES_HTML_BYTES)
             elif self.path == "/" or self.path == "/index.html":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")

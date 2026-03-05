@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game Archive — Yamanote</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%239acd32' /%3E%3Ccircle cx='16' cy='16' r='8' fill='%23fff' /%3E%3C/svg%3E">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: Helvetica, 'Segoe UI', Arial, sans-serif;
+    background: #1a1a1a;
+    color: #ccc;
+    min-height: 100vh;
+  }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 24px;
+    background: #111;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .header h1 {
+    font-size: 1.1rem; font-weight: 700;
+    letter-spacing: 3px; text-transform: uppercase;
+    color: #9acd32;
+  }
+  .header a {
+    font-size: 0.75rem; color: #666;
+    text-decoration: none; letter-spacing: 1px;
+  }
+  .header a:hover { color: #9acd32; }
+
+  .content {
+    display: flex;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    gap: 20px;
+  }
+
+  /* ── Game list ── */
+  .game-list {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .game-list-title {
+    font-size: 0.7rem;
+    letter-spacing: 2px;
+    color: #666;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .game-item {
+    padding: 10px 12px;
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .game-item:hover {
+    border-color: #4a6a2a;
+    background: #262626;
+  }
+  .game-item.active {
+    border-color: #9acd32;
+    background: #1a2a1a;
+  }
+  .game-item-date {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #ddd;
+    letter-spacing: 0.5px;
+  }
+  .game-item.active .game-item-date { color: #9acd32; }
+  .game-item-status {
+    font-size: 0.65rem;
+    color: #555;
+    margin-top: 2px;
+  }
+  .game-item.active .game-item-status { color: #4a6a2a; }
+
+  /* ── Player area ── */
+  .player {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .player-empty {
+    color: #555;
+    font-size: 0.85rem;
+    padding-top: 60px;
+  }
+  .player-date {
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: 3px;
+    color: #9acd32;
+    text-transform: uppercase;
+  }
+  .player-frame {
+    background: #000;
+    border: 2px solid #333;
+    border-radius: 3px;
+    width: 512px;
+    height: 512px;
+    overflow: hidden;
+  }
+  .player-frame iframe {
+    width: 512px;
+    height: 512px;
+    border: none;
+    display: block;
+  }
+  .player-controls {
+    font-size: 0.7rem;
+    color: #555;
+    letter-spacing: 1px;
+  }
+  .player-assessment-label {
+    font-size: 0.6rem;
+    color: #4a6a2a;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-weight: 700;
+    align-self: stretch;
+    max-width: 540px;
+    margin: 0 auto;
+  }
+  .player-assessment {
+    font-size: 0.75rem;
+    color: #888;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    max-width: 540px;
+    max-height: 200px;
+    overflow-y: auto;
+    align-self: stretch;
+    margin: 0 auto;
+  }
+  .player-not-exported {
+    color: #666;
+    font-size: 0.8rem;
+    padding-top: 40px;
+  }
+
+  @media (max-width: 800px) {
+    .content { flex-direction: column; }
+    .game-list {
+      width: 100%;
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .game-item { flex: 0 0 auto; }
+    .player-frame, .player-frame iframe { width: 100%; max-width: 512px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Game Archive</h1>
+  <a href="/">&larr; DASHBOARD</a>
+</div>
+
+<div class="content">
+  <div class="game-list">
+    <div class="game-list-title">All Games</div>
+    <div id="gameList"><span style="color:#555;font-size:0.8rem">Loading...</span></div>
+  </div>
+  <div class="player" id="player">
+    <div class="player-empty">Select a game to play</div>
+  </div>
+</div>
+
+<script>
+var games = [];
+var activeDate = null;
+
+function escapeHtml(str) {
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(str));
+  return d.innerHTML;
+}
+
+function loadGame(date) {
+  activeDate = date;
+  // Update active state in list
+  var items = document.querySelectorAll('.game-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].classList.toggle('active', items[i].dataset.date === date);
+  }
+
+  var game = null;
+  for (var i = 0; i < games.length; i++) {
+    if (games[i].date === date) { game = games[i]; break; }
+  }
+  if (!game) return;
+
+  var player = document.getElementById('player');
+  var html = '<div class="player-date">' + escapeHtml(date) + '</div>';
+
+  html += '<div class="player-frame">';
+  html += '<iframe src="/game/' + encodeURIComponent(date) + '/game.html" allowfullscreen allow="autoplay"></iframe>';
+  html += '</div>';
+  html += '<div class="player-controls">ARROWS: move &middot; Z: action &middot; X: alt &middot; ENTER: pause &middot; <a href="/game/' + encodeURIComponent(date) + '/game.p8" style="color:#4a6a2a" onmouseover="this.style.color=\'#9acd32\'" onmouseout="this.style.color=\'#4a6a2a\'">Download .p8</a></div>';
+
+  if (game.assessment_snippet) {
+    html += '<div class="player-assessment-label">Assessment</div>';
+    html += '<div class="player-assessment">' + escapeHtml(game.assessment_snippet) + '</div>';
+  }
+
+  player.innerHTML = html;
+}
+
+function renderList() {
+  var container = document.getElementById('gameList');
+  if (games.length === 0) {
+    container.innerHTML = '<span style="color:#555;font-size:0.8rem">No games found</span>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    var cls = 'game-item' + (g.date === activeDate ? ' active' : '');
+    var status = g.has_html ? 'playable' : 'source only';
+    html += '<div class="' + cls + '" data-date="' + escapeHtml(g.date) + '" onclick="loadGame(\'' + escapeHtml(g.date) + '\')">';
+    html += '<div class="game-item-date">' + escapeHtml(g.date) + '</div>';
+    html += '<div class="game-item-status">' + status + '</div>';
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+fetch('/api/games')
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    games = data;
+    renderList();
+    // Auto-select newest game
+    if (games.length > 0) {
+      loadGame(games[0].date);
+    }
+  })
+  .catch(function() {
+    document.getElementById('gameList').innerHTML = '<span style="color:#e81123;font-size:0.8rem">Failed to load</span>';
+  });
+</script>
+
+</body>
+</html>

@@ -530,7 +530,10 @@
   <div class="game-card">
     <div class="game-header">
       <span class="game-title">Game</span>
-      <span class="game-date" id="gameDate"></span>
+      <span style="display:flex;align-items:baseline;gap:12px">
+        <a href="/games" style="font-size:0.65rem;color:#4a6a2a;letter-spacing:1px;font-weight:600;text-decoration:none" onmouseover="this.style.color='#9acd32'" onmouseout="this.style.color='#4a6a2a'">ARCHIVE</a>
+        <span class="game-date" id="gameDate"></span>
+      </span>
     </div>
     <div class="game-body" id="gameBody">
       <div class="game-error">Loading...</div>
@@ -1139,9 +1142,9 @@ function refreshGame() {
       if (data.playable && !gameLoaded) {
         var html = '';
         html += '<div class="game-iframe-wrap">';
-        html += '<iframe src="/game/game.html" allowfullscreen></iframe>';
+        html += '<iframe src="/game/game.html" allowfullscreen allow="autoplay"></iframe>';
         html += '</div>';
-        html += '<div class="game-controls-hint">ARROWS: move &middot; Z: action &middot; X: alt &middot; ENTER: pause</div>';
+        html += '<div class="game-controls-hint">ARROWS: move &middot; Z: action &middot; X: alt &middot; ENTER: pause &middot; <a href="/game/' + encodeURIComponent(data.date) + '/game.p8" style="color:#4a6a2a" onmouseover="this.style.color=\'#9acd32\'" onmouseout="this.style.color=\'#4a6a2a\'">Download .p8</a></div>';
         if (data.assessment) {
           html += '<div class="game-assessment-label">Assessment</div>';
           html += '<div class="game-assessment">' + escapeHtml(data.assessment) + '</div>';
