@@ -19,24 +19,24 @@ AGENT_TIMEOUT_SECONDS = 1200  # max runtime per agent subprocess (20 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
-# Haiku for lightweight agents; Sonnet for the one that writes code.
+# Sonnet for everything — good balance of capability and cost.
 
 AGENT_MODELS = {
-    "dispatcher":      "claude-haiku-4-5-20251001",
-    "conductor":       "claude-opus-4-6",
-    "inspector":       "claude-opus-4-6",
-    "signal":          "claude-haiku-4-5-20251001",
-    "station_manager": "claude-haiku-4-5-20251001",
+    "dispatcher":      "claude-sonnet-4-5-20250929",
+    "conductor":       "claude-sonnet-4-5-20250929",
+    "inspector":       "claude-sonnet-4-5-20250929",
+    "signal":          "claude-sonnet-4-5-20250929",
+    "station_manager": "claude-sonnet-4-5-20250929",
     "ops":             "claude-sonnet-4-5-20250929",
 }
 
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
 
 AGENT_MIN_INTERVALS = {
-    "dispatcher":      300,    # 5 minutes (matches TRAIN_CONFIG dispatcher_interval)
+    "dispatcher":      1800,   # 30 minutes
     "conductor":       0,      # on-demand (spec-driven)
     "inspector":       0,      # on-demand (eng completion-driven)
-    "signal":          300,    # 5 minutes
+    "signal":          0,      # on-demand (triggered by log watcher, not polling)
     "station_manager": 0,      # on-demand
     "ops":             3600,   # 1 hour
 }
@@ -76,8 +76,7 @@ MAX_REWORK_ATTEMPTS = 3
 
 AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent after non-zero exit
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
-SIGNAL_MAX_BACKOFF = 300           # cap Signal failure backoff at 5 min (one missed window max)
-SIGNAL_MAX_MISS_SECONDS = 900      # 3 missed windows → file stuck spec
+SIGNAL_MAX_BACKOFF = 300           # cap Signal failure backoff at 5 min
 ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing conductor
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
@@ -90,18 +89,25 @@ DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 # ─── Train configuration ───────────────────────────────────────────────────
 TRAIN_CONFIG = {
     "regular": {
-        "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "2")),
-        "conductor_model": "claude-opus-4-6",
-        "inspector_model": "claude-opus-4-6",
+        "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "0")),
+        "conductor_model": "claude-sonnet-4-5-20250929",
+        "inspector_model": "claude-sonnet-4-5-20250929",
         "complexity": "high",
-        "dispatcher_interval": 300,   # 5 min
+        "dispatcher_interval": 1800,  # 30 min
+    },
+    "standard": {
+        "count": int(os.environ.get("AGENT_TEAM_STANDARD_TRAINS", "1")),
+        "conductor_model": "claude-sonnet-4-5-20250929",
+        "inspector_model": "claude-sonnet-4-5-20250929",
+        "complexity": "medium",
+        "dispatcher_interval": 1800,  # 30 min
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
-        "conductor_model": "claude-haiku-4-5-20251001",
-        "inspector_model": "claude-haiku-4-5-20251001",
+        "conductor_model": "claude-sonnet-4-5-20250929",
+        "inspector_model": "claude-sonnet-4-5-20250929",
         "complexity": "low",
-        "dispatcher_interval": 300,   # 5 min — Haiku work is cheap
+        "dispatcher_interval": 1800,  # 30 min
     },
 }
 
@@ -144,7 +150,7 @@ Instructions:
      "title": "short-kebab-title",
      "description": "Detailed description of what to build, acceptance criteria, and any constraints.",
      "priority": "high" | "medium" | "low",
-     "complexity": "high" | "low",
+     "complexity": "high" | "medium" | "low",
      "created_by": "dispatcher",
      "working_dir": "{working_dir}"
    }}
@@ -153,8 +159,9 @@ Instructions:
    Do NOT modify, resolve, or change this path. Use it exactly as shown above.
 
    Complexity guidelines:
-   - "low": Documentation changes, bug fixes with clear error messages, config changes, small features (<100 lines diff, 1-2 files)
-   - "high": Multi-file features, architectural changes, new subsystems (>100 lines or 3+ files)
+   - "high": Architectural changes, new subsystems, multi-file features (>100 lines, 3+ files)
+   - "medium": Moderate features spanning 2-4 files, integrations, non-trivial bug fixes
+   - "low": Single-file changes, config tweaks, documentation, small bug fixes (<50 lines)
 4. Name the file: {timestamp}_{{title}}.json
 5. Only create ONE spec per invocation. Be specific and actionable.
 """

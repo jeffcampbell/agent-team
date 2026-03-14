@@ -836,16 +836,17 @@ class TestPhaseScheduling(OrchestratorTestBase):
     def test_min_interval_blocks_launch(self, mock_popen):
         mock_popen.return_value = self._make_mock_proc()
         sm = self._make_station_manager()
-        sm.last_launch_times["signal"] = time.time()
-        agent = sm._launch_agent("signal", "prompt")
+        # Use dispatcher (30-min interval) instead of signal (now on-demand, 0 interval)
+        sm.last_launch_times["dispatcher"] = time.time()
+        agent = sm._launch_agent("dispatcher", "prompt")
         self.assertIsNone(agent)
 
     @patch("subprocess.Popen")
     def test_min_interval_allows_launch_after_elapsed(self, mock_popen):
         mock_popen.return_value = self._make_mock_proc()
         sm = self._make_station_manager()
-        sm.last_launch_times["signal"] = time.time() - config.AGENT_MIN_INTERVALS["signal"] - 1
-        agent = sm._launch_agent("signal", "prompt")
+        sm.last_launch_times["dispatcher"] = time.time() - config.AGENT_MIN_INTERVALS["dispatcher"] - 1
+        agent = sm._launch_agent("dispatcher", "prompt")
         self.assertIsNotNone(agent)
 
     @patch("subprocess.Popen")

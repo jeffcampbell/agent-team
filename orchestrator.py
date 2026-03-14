@@ -228,9 +228,6 @@ class StationManager:
         self.watcher_log_offsets: dict[str, int] = {}
         # Dedup: error signature → timestamp when we last filed a spec for it
         self.watcher_recent_specs: dict[str, float] = {}
-        # Signal health tracking
-        self.signal_last_success_time: float = time.time()  # init to now — no false alarms on startup
-        self.signal_stuck_spec_filed: bool = False
 
         # Wake detection logging throttle (reduce log noise)
         self.last_wake_log_time: float = 0.0
@@ -396,9 +393,6 @@ class StationManager:
                     self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
-                if name == "signal":
-                    self.signal_last_success_time = time.time()
-                    self.signal_stuck_spec_filed = False
             self._sre_prev_offsets.clear()
             return False
         if agent.is_timed_out():
@@ -898,8 +892,9 @@ class StationManager:
     def _find_spec_for_train(self, train: Train) -> str | None:
         """Find a suitable spec for this train based on complexity.
 
-        Regular trains try high first, then fall back to low.
-        Express trains only pick low complexity specs.
+        Regular trains:  high → medium → low
+        Standard trains: medium → low
+        Express trains:  low only
         """
         # With worktrees, multiple trains can work on the same project.
         # Collision is prevented by spec rename to .in_progress on pickup.
@@ -909,8 +904,13 @@ class StationManager:
         if primary:
             return primary[0]
 
-        # Fallback: regular trains can pick low specs; express never picks high
+        # Fallback chain: higher-capability trains can pick simpler specs
         if train.train_type == "regular":
+            for fallback_complexity in ("medium", "low"):
+                fallback = self._backlog_specs(complexity=fallback_complexity)
+                if fallback:
+                    return fallback[0]
+        elif train.train_type == "standard":
             fallback = self._backlog_specs(complexity="low")
             if fallback:
                 return fallback[0]
@@ -1259,7 +1259,7 @@ class StationManager:
         return os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
 
     def _log_watcher_tick(self, project_dir: str):
-        """Per-tick grep for ERROR/WARNING lines. File immediate spec without LLM."""
+        """Per-tick grep for ERROR/WARNING lines. Triggers Signal on-demand when found."""
         log_path = self._find_app_log(project_dir)
         if not log_path:
             return
@@ -1325,61 +1325,12 @@ class StationManager:
                 if train.branch and any(w in train.branch for w in kw_parts):
                     return
 
-        # File spec immediately (no LLM)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        spec = {
-            "title": f"log-alert-{summary}",
-            "description": (
-                "Log watcher detected ERROR/WARNING lines. Immediate triage required.\n\n"
-                "Matching lines:\n" + "\n".join(matching[:20])
-            ),
-            "priority": "high",
-            "complexity": "low",
-            "created_by": "watcher",
-            "working_dir": project_dir,
-        }
-        fname = os.path.join(config.BACKLOG_DIR, f"{ts}_alert_{summary}.json")
-        with open(fname, "w") as f:
-            json.dump(spec, f, indent=2)
         self.watcher_recent_specs[sig] = now
-        activity(f"ALERT  [watcher] filed spec: {spec['title']}")
+        # Trigger Signal to analyze the matching lines with LLM (reactive, not polling)
+        self._trigger_signal_reactive(project_dir, matching)
 
-    def _check_signal_health(self):
-        """If Signal hasn't run successfully in > SIGNAL_MAX_MISS_SECONDS, file a spec."""
-        if self.signal_stuck_spec_filed:
-            return
-        now = time.time()
-        missed = now - self.signal_last_success_time
-        if missed <= config.SIGNAL_MAX_MISS_SECONDS:
-            return
-        if self._is_agent_active("signal"):
-            return
-
-        cooldown_rem = max(0, self.agent_cooldowns.get("signal", 0) - now)
-        failures = self.consecutive_failures.get("signal", 0)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        spec = {
-            "title": "signal-agent-not-running-on-schedule",
-            "description": (
-                f"Signal agent has not completed a successful run in {int(missed)}s "
-                f"(threshold: {config.SIGNAL_MAX_MISS_SECONDS}s / 3 missed 5-min windows).\n\n"
-                f"Consecutive failures: {failures}\n"
-                f"Cooldown remaining: {int(cooldown_rem)}s\n\n"
-                "Investigate why Signal is failing and fix the root cause so it can "
-                "resume its 5-minute monitoring schedule."
-            ),
-            "priority": "high",
-            "complexity": "low",
-            "created_by": "orchestrator",
-        }
-        fname = os.path.join(config.BACKLOG_DIR, f"{ts}_signal_stuck.json")
-        with open(fname, "w") as f:
-            json.dump(spec, f, indent=2)
-        self.signal_stuck_spec_filed = True
-        activity(f"ALERT  [orchestrator] Signal stuck for {int(missed)}s — filed spec")
-
-    def _phase_signal(self):
-        """If a log file exists in the current project, launch Signal to analyze."""
+    def _trigger_signal_reactive(self, project_dir: str, matching_lines: list[str]):
+        """Launch Signal on-demand to analyze error lines found by the log watcher."""
         if self._is_agent_active("signal"):
             return
 
@@ -1387,25 +1338,7 @@ class StationManager:
         if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
 
-        project_dir = self._signal_project_dir()
-
-        # Layer 1: hard cap on open Signal bugs
         open_bugs = self._signal_open_bugs()
-        if len(open_bugs) >= config.MAX_SRE_OPEN_BUGS:
-            log.debug(
-                "Signal skipped — %d open Signal bugs (cap %d)",
-                len(open_bugs), config.MAX_SRE_OPEN_BUGS,
-            )
-            return
-
-        log_lines = self._read_new_log_lines(project_dir)
-        # Skip if empty or too few new lines to warrant analysis
-        # Update health timestamp even when skipping — Signal is functioning, logs are just quiet
-        if not log_lines or len(log_lines.splitlines()) < 10:
-            self.signal_last_success_time = time.time()
-            return
-
-        # Layer 2: pass existing bug titles into prompt for LLM dedup
         if open_bugs:
             existing_bugs_text = "\n".join(
                 f"- {bug.get('title', '(untitled)')}" for bug in open_bugs
@@ -1414,7 +1347,8 @@ class StationManager:
             existing_bugs_text = "(none)"
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        log.debug("Signal launching — analyzing logs in %s (%d open Signal bugs)", project_dir, len(open_bugs))
+        log_lines = "\n".join(matching_lines[:50])
+        activity(f"SIGNAL [watcher] triggered — {len(matching_lines)} error lines detected")
         prompt = config.SIGNAL_PROMPT.format(
             log_lines=log_lines,
             timestamp=ts,
@@ -1423,6 +1357,9 @@ class StationManager:
             existing_bugs=existing_bugs_text,
         )
         self._launch_agent("signal", prompt, cwd=project_dir)
+
+    # Signal is now reactive — triggered by _log_watcher_tick via _trigger_signal_reactive.
+    # No polling (_phase_signal) or health check (_check_signal_health) needed.
 
     def _train_phase_entropy_check(self, train: Train):
         """If branch has too many fix/update commits, fire Conductor and restart."""
@@ -1747,9 +1684,7 @@ class StationManager:
 
                 # Global phases
                 project_dir = self._signal_project_dir()
-                self._log_watcher_tick(project_dir)     # fast grep every tick
-                self._phase_signal()                    # deep analysis every 5 min
-                self._check_signal_health()             # file spec if Signal is stuck
+                self._log_watcher_tick(project_dir)     # fast grep every tick; triggers Signal on errors
                 self._phase_dispatcher()
                 self._phase_ops()
 
