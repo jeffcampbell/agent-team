@@ -292,6 +292,7 @@ def _build_status_payload(station_manager, verbose: bool = False) -> dict:
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "uptime_seconds": round(now - start_time, 1),
+        "paused": os.path.exists(config.PAUSE_FILE),
         "agents": agents_out,
         "trains": trains_out,
         "pipeline": pipeline_out,
@@ -302,6 +303,63 @@ def _build_status_payload(station_manager, verbose: bool = False) -> dict:
         "config": config_out,
         "verbose_logs": verbose_logs,
     }
+
+
+def _handle_post(path: str, station_manager) -> dict:
+    """Handle dashboard POST actions. Returns {"ok": bool, "message": str}."""
+    if path == "/api/pause":
+        with open(config.PAUSE_FILE, "w") as f:
+            f.write("paused")
+        return {"ok": True, "message": "Orchestrator paused"}
+
+    if path == "/api/resume":
+        try:
+            os.remove(config.PAUSE_FILE)
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "message": "Orchestrator resumed"}
+
+    if path.startswith("/api/skip/"):
+        # /api/skip/filename.json — create a .skip file
+        spec_name = path[len("/api/skip/"):]
+        if not spec_name or ".." in spec_name or "/" in spec_name:
+            return {"ok": False, "message": "Invalid spec name"}
+        spec_path = os.path.join(config.BACKLOG_DIR, spec_name)
+        if not os.path.exists(spec_path):
+            return {"ok": False, "message": "Spec not found"}
+        with open(spec_path + ".skip", "w") as f:
+            f.write("skipped")
+        return {"ok": True, "message": f"Spec {spec_name} skipped"}
+
+    if path.startswith("/api/unskip/"):
+        spec_name = path[len("/api/unskip/"):]
+        skip_path = os.path.join(config.BACKLOG_DIR, spec_name + ".skip")
+        try:
+            os.remove(skip_path)
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "message": f"Spec {spec_name} unskipped"}
+
+    if path.startswith("/api/retry/"):
+        # /api/retry/agent_name — clear cooldown for an agent
+        agent_name = path[len("/api/retry/"):]
+        if agent_name in station_manager.agent_cooldowns:
+            station_manager.agent_cooldowns[agent_name] = 0
+            station_manager.consecutive_failures.pop(agent_name, None)
+            return {"ok": True, "message": f"Cooldown cleared for {agent_name}"}
+        # Check train agents
+        for train in station_manager.trains:
+            if agent_name == f"conductor:{train.train_id}":
+                train.conductor_cooldown_until = 0
+                train.conductor_failures = 0
+                return {"ok": True, "message": f"Cooldown cleared for {agent_name}"}
+            if agent_name == f"inspector:{train.train_id}":
+                train.inspector_cooldown_until = 0
+                train.inspector_failures = 0
+                return {"ok": True, "message": f"Cooldown cleared for {agent_name}"}
+        return {"ok": False, "message": f"Unknown agent: {agent_name}"}
+
+    return {"ok": False, "message": f"Unknown action: {path}"}
 
 
 def _make_handler(station_manager):
@@ -326,6 +384,15 @@ def _make_handler(station_manager):
             else:
                 self.send_response(404)
                 self.end_headers()
+
+        def do_POST(self):
+            resp = _handle_post(self.path, station_manager)
+            payload = json.dumps(resp).encode()
+            self.send_response(200 if resp.get("ok") else 400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
 
         def log_message(self, format, *args):
             # Suppress per-request stderr logging

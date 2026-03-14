@@ -318,9 +318,13 @@ class StationManager:
 
         If complexity is given, filter to specs matching that complexity.
         Specs without a complexity field default to "high".
+        Specs with a corresponding .skip file are excluded.
         """
         PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
-        specs = sorted(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json")))
+        specs = [
+            p for p in sorted(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json")))
+            if not os.path.exists(p + ".skip")
+        ]
         if complexity is not None:
             filtered = []
             for path in specs:
@@ -1170,6 +1174,26 @@ class StationManager:
             train.reset_pipeline()
             return
 
+        # Dry-run merge check: detect conflicts before wasting an Inspector launch
+        repo = train.repo_dir or cwd
+        rc, _, merge_err = self._git_rc("merge", "--no-commit", "--no-ff", branch, cwd=repo)
+        # Always abort the trial merge (even if clean) to restore working state
+        self._git("merge", "--abort", cwd=repo)
+        if rc != 0:
+            activity(f"CONFLICT [{train.train_id}] — branch {branch} conflicts with {config.TRUNK_BRANCH}, re-queuing")
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if self._git_has_branch(branch, cwd=repo):
+                self._git("branch", "-D", branch, cwd=repo)
+            if train.spec_path:
+                ip_path = train.spec_path + ".in_progress"
+                if os.path.exists(ip_path):
+                    os.rename(ip_path, train.spec_path)
+            feedback_path = self._feedback_path(branch)
+            if os.path.exists(feedback_path):
+                os.remove(feedback_path)
+            train.reset_pipeline()
+            return
+
         feedback_path = os.path.join(
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
@@ -1539,11 +1563,19 @@ class StationManager:
         if config.RAILWAY_PROJECT:
             self._deploy_to_railway(cwd=repo_dir)
         elif config.SERVICE_RESTART_CMD:
-            rc = os.system(config.SERVICE_RESTART_CMD)
-            if rc == 0:
-                activity("SERVICE restarted successfully")
-            else:
-                activity(f"SERVICE restart failed (rc={rc})")
+            try:
+                result = subprocess.run(
+                    config.SERVICE_RESTART_CMD,
+                    shell=True,
+                    timeout=config.SERVICE_RESTART_TIMEOUT,
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0:
+                    activity("SERVICE restarted successfully")
+                else:
+                    activity(f"SERVICE restart failed (rc={result.returncode}): {result.stderr[:200]}")
+            except subprocess.TimeoutExpired:
+                activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
         else:
             activity("SERVICE restart skipped (no deployment method configured)")
 
@@ -1662,6 +1694,17 @@ class StationManager:
                         activity(f"SERVICE SUSPENDED — {remaining}s remaining (fare limit)")
                     time.sleep(config.TICK_INTERVAL)
                     continue
+
+                # Pause check — touch agents/pause to pause, rm to resume
+                if os.path.exists(config.PAUSE_FILE):
+                    if not getattr(self, '_pause_logged', False):
+                        activity("PAUSED — agents/pause file detected, skipping all launches")
+                        self._pause_logged = True
+                    time.sleep(config.TICK_INTERVAL)
+                    continue
+                elif getattr(self, '_pause_logged', False):
+                    activity("RESUMED — agents/pause file removed")
+                    self._pause_logged = False
 
                 # Per-train phases
                 for train in self.trains:

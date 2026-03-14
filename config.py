@@ -82,6 +82,8 @@ MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this ma
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
 MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
+PAUSE_FILE = os.path.join(BASE_DIR, "agents", "pause")  # touch to pause, rm to resume
+SERVICE_RESTART_TIMEOUT = 300      # seconds before service restart is killed
 
 # ─── Dashboard (optional) ────────────────────────────────────────────────
 DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))

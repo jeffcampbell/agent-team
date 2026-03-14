@@ -20,11 +20,11 @@ Each phase decides whether to launch its agent based on the current state of the
 
 | Agent | Model | Role |
 |---|---|---|
-| **Dispatcher** | Haiku | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
+| **Dispatcher** | Sonnet | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
 | **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
-| **Inspector** | Haiku | Reviews diffs against `main`. Merges acceptable work or requests changes |
-| **Signal** | Haiku | Monitors application logs for errors and files bug tickets into the backlog |
-| **Station Manager** | Haiku | Resets branches when Conductor gets stuck in edit loops |
+| **Inspector** | Sonnet | Reviews diffs against `main`. Merges acceptable work or requests changes |
+| **Signal** | Sonnet | Monitors application logs for errors and files bug tickets into the backlog |
+| **Station Manager** | Sonnet | Resets branches when Conductor gets stuck in edit loops |
 | **Operations** | Sonnet | Analyzes orchestrator activity and implements small operational improvements |
 
 ### Pipeline flow
@@ -257,7 +257,7 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | Setting | Default | Description |
 |---|---|---|
 | `TICK_INTERVAL` | 10s | Seconds between orchestration ticks |
-| `AGENT_TIMEOUT_SECONDS` | 600s (10 min) | Max runtime per agent subprocess before termination |
+| `AGENT_TIMEOUT_SECONDS` | 1200s (20 min) | Max runtime per agent subprocess before termination |
 | `SLEEP_MODE_DURATION` | 3600s (1 hr) | How long to sleep when fare limit triggers |
 
 ### Agent models
@@ -268,16 +268,16 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 
 ```python
 AGENT_MODELS = {
-    "dispatcher":      "claude-haiku-4-5-20251001",
+    "dispatcher":      "claude-sonnet-4-5-20250929",
     "conductor":       "claude-sonnet-4-5-20250929",
-    "inspector":       "claude-haiku-4-5-20251001",
-    "signal":          "claude-haiku-4-5-20251001",
-    "station_manager": "claude-haiku-4-5-20251001",
+    "inspector":       "claude-sonnet-4-5-20250929",
+    "signal":          "claude-sonnet-4-5-20250929",
+    "station_manager": "claude-sonnet-4-5-20250929",
     "ops":             "claude-sonnet-4-5-20250929",
 }
 ```
 
-Conductor uses Sonnet (the most capable coding model); all other agents use Haiku to minimize cost. Operations also uses Sonnet as it modifies the orchestrator itself.
+All agents use Sonnet for a good balance of capability and cost.
 
 ### Agent throttling
 
@@ -287,10 +287,10 @@ Conductor uses Sonnet (the most capable coding model); all other agents use Haik
 
 ```python
 AGENT_MIN_INTERVALS = {
-    "dispatcher":      900,    # 15 minutes
-    "conductor":       0,      # on-demand
-    "inspector":       0,      # on-demand
-    "signal":          300,    # 5 minutes
+    "dispatcher":      1800,   # 30 minutes
+    "conductor":       0,      # on-demand (spec-driven)
+    "inspector":       0,      # on-demand (eng completion-driven)
+    "signal":          0,      # on-demand (triggered by log watcher, not polling)
     "station_manager": 0,      # on-demand
     "ops":             3600,   # 1 hour
 }
@@ -304,7 +304,7 @@ AGENT_MIN_INTERVALS = {
 | `AGENT_ERROR_COOLDOWN` | 120s | Base cooldown after an agent exits non-zero |
 | `MAX_ERROR_BACKOFF` | 3600s | Cap for exponential backoff on repeated failures |
 | `ENTROPY_FIX_COMMIT_THRESHOLD` | 5 | "fix"/"update" commits on a branch before Conductor is fired and the branch is reset |
-| `MAX_ENG_EDITS_BEFORE_RESET` | 3 | File edit cycles before Station Manager resets the branch |
+| `MAX_ENG_EDITS_BEFORE_RESET` | 5 | File edit cycles before Station Manager resets the branch |
 | `MAX_REWORK_ATTEMPTS` | 3 | Inspector change requests before the spec is abandoned |
 | `MAX_SPEC_TIMEOUTS` | 2 | Conductor timeouts on a spec before it is dropped |
 | `SELF_PROJECT_DIR` | `BASE_DIR` | Prevents agents from modifying the orchestrator itself |
@@ -338,9 +338,43 @@ When no log file is found, the Dispatcher falls back to codebase-only analysis.
 - **Fare limit** — enters sleep mode for 1 hour after 30 launches in a rolling hour
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
-- **Timeout enforcement** — agents are terminated after 10 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
+- **Timeout enforcement** — agents are terminated after 20 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
 - **Orphan recovery** — on startup, any `.in_progress` specs from a previous crash are restored to the backlog
 - **Working directory validation** — specs must target a directory under `DEVELOPMENT_DIR`
+- **Merge conflict detection** — before launching Inspector, the orchestrator performs a dry-run merge. If the branch conflicts with main, it is deleted and the spec re-queued for a fresh attempt
+- **Service restart timeout** — service restart commands are killed after 5 minutes to prevent the orchestrator from hanging
+
+## Manual controls
+
+### Pause / resume
+
+Touch the pause file to pause all agent launches. Remove it to resume:
+
+```bash
+touch agents/pause    # pause
+rm agents/pause       # resume
+```
+
+### Skip a spec
+
+Create a `.skip` file next to a backlog spec to exclude it from pickup:
+
+```bash
+touch agents/backlog/some_spec.json.skip    # skip
+rm agents/backlog/some_spec.json.skip       # unskip
+```
+
+### Dashboard controls
+
+When the dashboard is enabled, POST endpoints provide runtime control:
+
+| Endpoint | Action |
+|---|---|
+| `POST /api/pause` | Pause the orchestrator |
+| `POST /api/resume` | Resume the orchestrator |
+| `POST /api/skip/<filename>` | Skip a backlog spec |
+| `POST /api/unskip/<filename>` | Unskip a backlog spec |
+| `POST /api/retry/<agent_name>` | Clear cooldown and retry an agent immediately |
 
 ## License
 

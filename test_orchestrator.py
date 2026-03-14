@@ -607,6 +607,7 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         sm._create_worktree = MagicMock(return_value="/tmp/fake_worktree")
         sm._remove_worktree = MagicMock()
         sm._git = MagicMock(return_value="")
+        sm._git_rc = MagicMock(return_value=(0, "", ""))
         sm._git_has_branch = MagicMock(return_value=False)
         sm._git_diff_trunk = MagicMock(return_value="")
         sm._git_last_commit = MagicMock(return_value="abc123")
@@ -739,11 +740,9 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         sm._train_phase_service_recovery(train)
         self.assertEqual(train.branch, "feature/not-yet")
 
-    @patch("os.system")
     @patch("subprocess.run")
-    def test_service_recovery_calls_restart_cmd(self, mock_run, mock_system):
+    def test_service_recovery_calls_restart_cmd(self, mock_run):
         mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
-        mock_system.return_value = 0
         config.SERVICE_RESTART_CMD = "systemctl restart myapp"
         sm = self._setup_sm_with_mocked_git()
         sm._git_has_branch.return_value = True
@@ -756,7 +755,11 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         os.rename(spec_path, spec_path + ".in_progress")
         self._write_feedback("feature/restart", "APPROVED\n")
         sm._train_phase_service_recovery(train)
-        mock_system.assert_called_once_with("systemctl restart myapp")
+        mock_run.assert_any_call(
+            "systemctl restart myapp",
+            shell=True, timeout=config.SERVICE_RESTART_TIMEOUT,
+            capture_output=True, text=True,
+        )
 
     def test_inspector_skips_when_feedback_exists(self):
         """Inspector should not relaunch when feedback file already exists."""
@@ -1458,7 +1461,7 @@ class TestDashboardPayload(OrchestratorTestBase):
     def test_payload_contains_expected_keys(self):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
-        expected = {"timestamp", "uptime_seconds", "agents", "trains",
+        expected = {"timestamp", "uptime_seconds", "paused", "agents", "trains",
                     "pipeline", "backlog", "completed", "stats", "activity", "config",
                     "verbose_logs"}
         self.assertEqual(set(payload.keys()), expected)
