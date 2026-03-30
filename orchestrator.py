@@ -282,6 +282,12 @@ class Train:
         # Agent slots
         self.conductor: AgentProcess | None = None
         self.inspector: AgentProcess | None = None
+        self.triage: AgentProcess | None = None
+
+        # Triage gate state
+        self.needs_triage: bool = False
+        self.triage_failures: int = 0
+        self.triage_cooldown_until: float = 0.0
 
         # Per-train cooldowns
         self.conductor_cooldown_until: float = 0.0
@@ -305,6 +311,9 @@ class Train:
         self.spec_timeout_count = 0
         self.spec_started_at = 0.0
         self.checkpoint_idle_since = 0.0
+        self.needs_triage = False
+        self.triage_failures = 0
+        self.triage_cooldown_until = 0.0
 
 
 class StationManager:
@@ -334,6 +343,7 @@ class StationManager:
             "signal": None,
             "station_manager": None,
             "ops": None,
+            "triage": None,
         }
         self.last_merge_commit: str | None = None
         self._dispatcher_skip_logged_trains: set[str] = set()
@@ -1316,6 +1326,168 @@ class StationManager:
         train.rework_count = 0
         train.spec_timeout_count = 0
 
+        # Rename spec to .in_progress before triage
+        try:
+            os.rename(spec_path, spec_path + ".in_progress")
+        except OSError:
+            pass  # If rename fails, continue with original path; triage will handle it
+
+        # Route to triage gate before building
+        train.needs_triage = True
+        return
+
+    def _train_phase_triage(self, train: Train):
+        """Triage gate: evaluate whether a spec is worth building before launching Conductor."""
+        if not train.needs_triage:
+            return
+        if not train.spec_path or not train.branch:
+            return
+        if time.time() < train.triage_cooldown_until:
+            return
+
+        # Check if triage agent is still running
+        if train.triage is not None:
+            if train.triage.poll():
+                # Triage finished — process verdict
+                train.triage.save_log()
+                output = train.triage.get_output()
+                rc = train.triage.proc.returncode if train.triage.proc else "?"
+                train.triage = None
+
+                if rc != 0:
+                    # Triage agent failed — let spec through (fail-open) but with backoff
+                    activity(f"Triage:{train.train_id} — agent failed (rc={rc}), approving spec by default")
+                    train.needs_triage = False
+                    train.triage_failures += 1
+                    backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.triage_failures), config.MAX_ERROR_BACKOFF)
+                    train.triage_cooldown_until = time.time() + backoff
+                    return
+
+                verdict = output.strip().split("\n")[0].strip().upper() if output else ""
+                # Strip markdown formatting (**text**, *text*, etc.) from verdict
+                verdict = re.sub(r'[\*_`]+', '', verdict)
+                reason = output.strip().split("\n", 1)[1].strip() if output and "\n" in output.strip() else ""
+
+                if verdict.startswith("BUILD"):
+                    train.needs_triage = False
+                    train.triage_failures = 0  # Clear failures on successful triage
+                elif verdict.startswith("REJECT"):
+                    spec_title = train.branch.removeprefix("feature/")
+                    reason_clean = _strip_markdown(_strip_reason_prefix(reason))
+                    reason_display = _first_line_truncated(reason_clean, limit=150)
+                    activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': {reason_display}")
+                    record_rejection(spec_title, reason[:300])
+                    if train.spec_path and os.path.exists(train.spec_path):
+                        os.remove(train.spec_path)
+                    # Also remove .in_progress variant
+                    in_progress = train.spec_path + ".in_progress"
+                    if os.path.exists(in_progress):
+                        os.remove(in_progress)
+                    train.reset_pipeline()
+                elif verdict.startswith("HOLD"):
+                    spec_title = train.branch.removeprefix("feature/")
+                    reason_clean = _strip_markdown(_strip_reason_prefix(reason))
+                    reason_display = _first_line_truncated(reason_clean, limit=150)
+                    activity(f"Triage:{train.train_id} — HOLD spec '{spec_title}': {reason_display}")
+                    # Move spec to drafts
+                    src = train.spec_path + ".in_progress"
+                    if not os.path.exists(src):
+                        src = train.spec_path
+                    if os.path.exists(src):
+                        dest = os.path.join(config.DRAFTS_DIR, os.path.basename(train.spec_path).removesuffix(".in_progress") + ".json")
+                        os.makedirs(config.DRAFTS_DIR, exist_ok=True)
+                        shutil.move(src, dest)
+                    train.reset_pipeline()
+                else:
+                    # Unrecognized verdict — fail-secure, reject to force investigation
+                    spec_title = train.branch.removeprefix("feature/")
+                    reason_msg = f"Triage returned unrecognized verdict: {verdict[:50]}"
+                    activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': triage verdict parse error")
+                    record_rejection(spec_title, reason_msg)
+                    if train.spec_path and os.path.exists(train.spec_path):
+                        os.remove(train.spec_path)
+                    in_progress = train.spec_path + ".in_progress"
+                    if os.path.exists(in_progress):
+                        os.remove(in_progress)
+                    train.reset_pipeline()
+            elif train.triage.is_timed_out():
+                # Triage timed out — fail-open but with exponential backoff
+                elapsed = time.time() - (train.triage.start_time or 0)
+                activity(f"OVERDUE [triage:{train.train_id}] after {elapsed:.0f}s — approving spec by default")
+                if train.triage.proc and train.triage.proc.poll() is None:
+                    train.triage.proc.terminate()
+                train.triage = None
+                train.needs_triage = False
+                train.triage_failures += 1
+                backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.triage_failures), config.MAX_ERROR_BACKOFF)
+                train.triage_cooldown_until = time.time() + backoff
+            return
+
+        # No triage agent running yet — launch one
+        in_progress_path = train.spec_path + ".in_progress"
+        spec_read_path = in_progress_path if os.path.exists(in_progress_path) else train.spec_path
+        try:
+            with open(spec_read_path) as f:
+                spec_data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Cannot read spec for triage %s: %s", spec_read_path, e)
+            train.needs_triage = False  # fail-open
+            return
+
+        working_dir = spec_data.get("working_dir", "")
+        working_dir_exists = os.path.isdir(working_dir)
+        recent_merges = self._git("log", "--oneline", "-15", cwd=working_dir) if working_dir_exists else "(none)"
+        rejected_specs = read_rejection_log(max_lines=2)
+        failed_specs = read_failure_log()
+
+        prompt = config.TRIAGE_PROMPT.format(
+            working_dir=working_dir,
+            spec_json=json.dumps(spec_data, indent=2),
+            rejected_specs=rejected_specs,
+            failed_specs=failed_specs,
+            recent_merges=recent_merges,
+        )
+        agent = self._launch_agent("triage", prompt, cwd=working_dir if working_dir_exists else None)
+        if agent is not None:
+            train.triage = agent
+            # Remove from active_agents since we track it on the train
+            self.active_agents["triage"] = None
+        else:
+            # Launch failed — fail-open
+            train.needs_triage = False
+
+    def _train_phase_conductor_launch(self, train: Train):
+        """Launch conductor for a triaged spec. Split from _train_phase_conductor for triage gate."""
+        if train.needs_triage:
+            return
+        if not train.branch or not train.spec_path:
+            return
+        if train.conductor is not None or train.inspector is not None:
+            return
+        # Don't launch if worktree already exists (already in review pipeline)
+        if train.working_dir and train.working_dir != train.repo_dir:
+            return
+
+        spec_path = train.spec_path
+        branch_name = train.branch
+        working_dir = train.repo_dir
+
+        if not working_dir:
+            return
+
+        # Re-read spec data
+        in_progress_path = spec_path + ".in_progress"
+        spec_read_path = in_progress_path if os.path.exists(in_progress_path) else spec_path
+        try:
+            with open(spec_read_path) as f:
+                spec_data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Cannot read spec for conductor launch %s: %s", spec_read_path, e)
+            train.reset_pipeline()
+            return
+
+        spec_title = spec_data.get("title", "untitled")
+
         # If the feature branch already exists with changes, skip Conductor → inspector
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
             activity(f"Conductor:{train.train_id} — branch {branch_name} already has changes, routing to inspector (orphan recovery)")
@@ -1326,7 +1498,6 @@ class StationManager:
                 train.reset_pipeline()
                 return
             train.working_dir = worktree_path
-            os.rename(spec_path, spec_path + ".in_progress")
             return
 
         # Create worktree with the feature branch
@@ -1355,7 +1526,6 @@ class StationManager:
             train.reset_pipeline()
             return
         train.edits_tallied = False
-        os.rename(spec_path, spec_path + ".in_progress")
 
     def _train_phase_inspector(self, train: Train):
         """If Conductor finished on this train and branch has changes, launch Inspector."""
@@ -2023,6 +2193,8 @@ class StationManager:
                             train.conductor_cooldown_until += drift
                         if train.inspector_cooldown_until > 0:
                             train.inspector_cooldown_until += drift
+                        if train.triage_cooldown_until > 0:
+                            train.triage_cooldown_until += drift
                 last_tick_time = now
 
                 # Sleep mode check
@@ -2052,6 +2224,8 @@ class StationManager:
                     self._train_phase_service_recovery(train)
                     self._train_phase_rework(train)
                     self._train_phase_conductor(train)
+                    self._train_phase_triage(train)
+                    self._train_phase_conductor_launch(train)
                     self._train_phase_inspector(train)
                     self._train_phase_entropy_check(train)
                     self._train_phase_station_manager_check(train)
@@ -2084,6 +2258,8 @@ class StationManager:
                         active.append(f"conductor:{train.train_id}")
                     if train.inspector is not None:
                         active.append(f"inspector:{train.train_id}")
+                    if train.triage is not None:
+                        active.append(f"triage:{train.train_id}")
                 backlog_count = self._get_cached_backlog_count()
                 if active or backlog_count:
                     log.info(
@@ -2105,7 +2281,7 @@ class StationManager:
                         agent.proc.kill()
                     agent.save_log()
             for train in self.trains:
-                for role, agent in [("conductor", train.conductor), ("inspector", train.inspector)]:
+                for role, agent in [("conductor", train.conductor), ("inspector", train.inspector), ("triage", train.triage)]:
                     if agent and agent.proc and agent.proc.poll() is None:
                         activity(f"Terminating {role}:{train.train_id} (PID {agent.proc.pid})")
                         agent.proc.terminate()

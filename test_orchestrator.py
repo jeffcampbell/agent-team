@@ -119,6 +119,20 @@ class OrchestratorTestBase(unittest.TestCase):
         from orchestrator import StationManager
         return StationManager()
 
+    def _approve_triage(self, sm, train, mock_popen):
+        """Simulate triage BUILD approval so conductor can launch."""
+        # First call launches the triage agent
+        sm._train_phase_triage(train)
+        self.assertIsNotNone(train.triage)
+        # Simulate triage finishing with BUILD verdict
+        train.triage.proc.poll.return_value = 0  # finished
+        train.triage.proc.returncode = 0
+        train.triage._output = "BUILD\nLooks good."
+        train.triage._live_log_path = "/dev/null"
+        # Second call processes the verdict
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. TestAgentProcessLifecycle
@@ -642,6 +656,10 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         sm._train_phase_conductor(train)
         self.assertEqual(train.spec_path, spec_path)
         self.assertEqual(train.branch, "feature/test-feature")
+        self.assertTrue(train.needs_triage)
+        # Approve triage, then launch conductor
+        self._approve_triage(sm, train, mock_popen)
+        sm._train_phase_conductor_launch(train)
         self.assertIsNotNone(train.conductor)
 
     @patch("subprocess.Popen")
@@ -814,6 +832,9 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         })
         train = sm.trains[0]
         sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        self._approve_triage(sm, train, mock_popen)
+        sm._train_phase_conductor_launch(train)
         self.assertIsNone(train.branch)
         self.assertIsNone(train.conductor)
 
@@ -836,6 +857,9 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         })
         train = sm.trains[0]
         sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        self._approve_triage(sm, train, mock_popen)
+        sm._train_phase_conductor_launch(train)
         self.assertIsNone(train.branch)
         self.assertIsNone(train.conductor)
 
@@ -1360,6 +1384,7 @@ class TestSafetyGuards(OrchestratorTestBase):
         sm = self._make_station_manager()
         sm._create_worktree = MagicMock(return_value="/tmp/wt")
         sm._remove_worktree = MagicMock()
+        sm._git = MagicMock(return_value="")
         sm._git_has_branch = MagicMock(return_value=False)
         sm._git_diff_trunk = MagicMock(return_value="")
         train = sm.trains[0]
@@ -1372,6 +1397,10 @@ class TestSafetyGuards(OrchestratorTestBase):
             "working_dir": dev_dir,
         })
         sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        # Approve triage, then launch conductor
+        self._approve_triage(sm, train, mock_popen)
+        sm._train_phase_conductor_launch(train)
         self.assertIsNotNone(train.conductor)
 
 
@@ -2052,6 +2081,138 @@ class TestIdleSLA(OrchestratorTestBase):
         sm.all_idle_since = time.time() - (config.IDLE_SLA_SECONDS + 10)
         sm._check_idle_sla()
         self.assertNotIn("dispatcher", sm.last_launch_times)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestTriageSystem
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestTriageSystem(OrchestratorTestBase):
+    """Test triage gate between dispatcher and conductor."""
+
+    def _setup_triage_train(self, mock_popen):
+        """Set up a train with a spec ready for triage."""
+        mock_popen.return_value = self._make_mock_proc()
+        sm = self._make_station_manager()
+        sm._create_worktree = MagicMock(return_value="/tmp/fake_worktree")
+        sm._remove_worktree = MagicMock()
+        sm._git = MagicMock(return_value="")
+        sm._git_rc = MagicMock(return_value=(0, "", ""))
+        sm._git_has_branch = MagicMock(return_value=False)
+        sm._git_diff_trunk = MagicMock(return_value="")
+        sm._git_last_commit = MagicMock(return_value="abc123")
+        train = sm.trains[0]
+        dev_dir = os.path.join(self.tmpdir, "dev")
+        os.makedirs(dev_dir, exist_ok=True)
+        config.DEVELOPMENT_DIR = self.tmpdir
+        config.DEFAULT_PROJECT = "dev"
+        self._write_spec("triage_test.json", {
+            "title": "triage-feature",
+            "description": "test feature for triage",
+            "working_dir": dev_dir,
+        })
+        sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        return sm, train
+
+    @patch("subprocess.Popen")
+    def test_build_verdict_approves_spec(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        # Launch triage
+        sm._train_phase_triage(train)
+        self.assertIsNotNone(train.triage)
+        # Simulate BUILD verdict
+        train.triage.proc.poll.return_value = 0
+        train.triage.proc.returncode = 0
+        train.triage._output = "BUILD\nThis spec is useful and ready."
+        train.triage._live_log_path = "/dev/null"
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)
+        self.assertIsNotNone(train.spec_path)  # spec not removed
+
+    @patch("subprocess.Popen")
+    def test_reject_verdict_removes_spec(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        spec_path = train.spec_path
+        sm._train_phase_triage(train)
+        # Simulate REJECT verdict
+        train.triage.proc.poll.return_value = 0
+        train.triage.proc.returncode = 0
+        train.triage._output = "REJECT\nNot useful right now."
+        train.triage._live_log_path = "/dev/null"
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset
+        self.assertIsNone(train.branch)
+        # Spec file should be removed
+        self.assertFalse(os.path.exists(spec_path))
+        self.assertFalse(os.path.exists(spec_path + ".in_progress"))
+
+    @patch("subprocess.Popen")
+    def test_hold_verdict_moves_spec_to_drafts(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        sm._train_phase_triage(train)
+        # Simulate HOLD verdict
+        train.triage.proc.poll.return_value = 0
+        train.triage.proc.returncode = 0
+        train.triage._output = "HOLD\nNeeds more detail on acceptance criteria."
+        train.triage._live_log_path = "/dev/null"
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset
+        # Spec should be in drafts
+        drafts = os.listdir(config.DRAFTS_DIR)
+        self.assertEqual(len(drafts), 1)
+        self.assertTrue(drafts[0].endswith(".json"))
+
+    @patch("subprocess.Popen")
+    def test_agent_failure_is_fail_open(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        sm._train_phase_triage(train)
+        # Simulate agent failure (rc != 0)
+        train.triage.proc.poll.return_value = 1
+        train.triage.proc.returncode = 1
+        train.triage._output = ""
+        train.triage._live_log_path = "/dev/null"
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)  # fail-open: approved
+        self.assertEqual(train.triage_failures, 1)
+        self.assertGreater(train.triage_cooldown_until, 0)
+
+    @patch("subprocess.Popen")
+    def test_unrecognized_verdict_rejects(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        spec_path = train.spec_path
+        sm._train_phase_triage(train)
+        # Simulate unrecognized verdict
+        train.triage.proc.poll.return_value = 0
+        train.triage.proc.returncode = 0
+        train.triage._output = "MAYBE\nI'm not sure about this one."
+        train.triage._live_log_path = "/dev/null"
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset (rejected)
+        self.assertIsNone(train.branch)
+
+    @patch("subprocess.Popen")
+    def test_triage_timeout_is_fail_open(self, mock_popen):
+        sm, train = self._setup_triage_train(mock_popen)
+        sm._train_phase_triage(train)
+        self.assertIsNotNone(train.triage)
+        # Simulate timeout: not finished yet, but timed out
+        train.triage.proc.poll.return_value = None
+        train.triage.is_timed_out = MagicMock(return_value=True)
+        train.triage.start_time = time.time() - 9999
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)  # fail-open: approved
+        self.assertEqual(train.triage_failures, 1)
+
+    @patch("subprocess.Popen")
+    def test_conductor_picks_up_spec_and_sets_needs_triage(self, mock_popen):
+        mock_popen.return_value = self._make_mock_proc()
+        sm, train = self._setup_triage_train(mock_popen)
+        # After _train_phase_conductor, train should have spec and branch but needs_triage=True
+        self.assertTrue(train.needs_triage)
+        self.assertIsNotNone(train.spec_path)
+        self.assertEqual(train.branch, "feature/triage-feature")
+        self.assertIsNone(train.conductor)  # conductor not launched yet
 
 
 if __name__ == "__main__":
