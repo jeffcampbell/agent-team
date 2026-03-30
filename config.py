@@ -48,6 +48,7 @@ AGENT_MODELS = {
     "signal":          "claude-sonnet-4-5-20250929",
     "station_manager": "claude-sonnet-4-5-20250929",
     "ops":             "claude-sonnet-4-5-20250929",
+    "triage":          "claude-sonnet-4-5-20250929",
 }
 
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
@@ -59,6 +60,7 @@ AGENT_MIN_INTERVALS = {
     "signal":          0,      # on-demand (triggered by log watcher, not polling)
     "station_manager": 0,      # on-demand
     "ops":             3600,   # 1 hour
+    "triage":          0,      # on-demand (spec-driven)
 }
 
 # ─── Claude invocation ───────────────────────────────────────────────────────
@@ -183,6 +185,55 @@ Instructions:
    - "low": Single-file changes, config tweaks, documentation, small bug fixes (<50 lines)
 4. Name the file: {timestamp}_{{title}}.json
 5. Only create ONE spec per invocation. Be specific and actionable.
+"""
+
+TRIAGE_PROMPT = """\
+You are the Triage agent. Your job is to decide whether a spec is worth spending \
+tokens to build RIGHT NOW. You are a gate — your purpose is to prevent waste.
+
+The project is located at: {working_dir}
+
+Here is the spec under review:
+{spec_json}
+
+Context — previously rejected specs with dates and reasons:
+{rejected_specs}
+These are history, not a blocklist. A previously rejected idea may be worth building now \
+if circumstances have changed. Consider the rejection date and reasoning — recent rejections \
+with unchanged reasoning should carry more weight than older ones.
+
+Context — recently failed specs with reasons (avoid repeating these):
+{failed_specs}
+
+Context — recent git history (what's already been built):
+{recent_merges}
+
+Instructions:
+1. Read {working_dir}/CLAUDE.md — it defines the project's priorities and conventions.
+2. Briefly review the codebase at {working_dir} to understand its current state.
+3. Evaluate this spec against THREE criteria:
+
+   a. USEFUL vs INTERESTING — Does this solve a real problem that users actually hit, \
+      or is it just a neat idea? Developer tooling, dashboards, analyzers, and \
+      meta-features are almost never the right answer. If users aren't asking for it \
+      and it won't measurably improve the product, it's not useful.
+
+   b. PRIORITY — Is this the most important thing to build right now? Given CLAUDE.md \
+      priorities, existing bugs, and what's already been built, would a thoughtful \
+      engineer pick THIS as the next task? If something more important is being ignored, \
+      reject this.
+
+   c. READINESS — Is the spec clear enough to implement without guesswork? Are the \
+      acceptance criteria specific? If a conductor would have to make significant \
+      assumptions, the spec isn't ready.
+
+4. Output your verdict as the FIRST LINE of your response, followed by a brief reason:
+   - BUILD — This is useful, high-priority, and ready to implement.
+   - REJECT — This should not be built. State why clearly.
+   - HOLD — This has potential but isn't ready. State what's missing.
+
+   Default to REJECT or HOLD, not BUILD. The bar for spending tokens should be high. \
+   It is better to build nothing than to build the wrong thing.
 """
 
 # Shared worktree safety preamble — injected into both conductor prompts
