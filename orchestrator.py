@@ -36,6 +36,42 @@ def activity(msg: str):
         pass
 
 
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting characters from text for activity log readability."""
+    text = re.sub(r'[*_`#>\[\]\-]+', '', text)
+    return ' '.join(text.split())
+
+
+def _strip_reason_prefix(text: str) -> str:
+    """Strip verbose prefixes from agent decision reasons (e.g., 'Reasoning:', 'Why:')."""
+    patterns = [
+        r'^Why\s+.*?HOLD,\s+not\s+BUILD[\s:]*',
+        r'^Why\s+.*?REJECT[\s:]*',
+        r'^Why[\s:]*',
+        r'^[\w\s]*?Reasoning[\s:.\d]*',
+        r'^Reason[\s:]*',
+        r'^Analysis[\s:]*',
+    ]
+    result = text
+    for pattern in patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+        if result != text:
+            break
+    return result.strip()
+
+
+def _first_line_truncated(text: str, limit: int = 150) -> str:
+    """Extract first line of text and truncate to limit chars at word boundaries."""
+    first_line = text.split('\n')[0].strip()
+    if len(first_line) <= limit:
+        return first_line
+    truncated = first_line[:limit]
+    last_space = truncated.rfind(' ')
+    if last_space > limit - 30:
+        return first_line[:last_space] + "..."
+    return first_line[:limit - 3] + "..."
+
+
 # Pattern: match lines containing ERROR/WARNING/CRITICAL/FATAL (case-insensitive)
 _WATCHER_PATTERN = re.compile(r'\b(ERROR|WARNING|WARN|CRITICAL|FATAL)\b', re.IGNORECASE)
 
