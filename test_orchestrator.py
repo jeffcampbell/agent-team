@@ -104,6 +104,22 @@ class OrchestratorTestBase(unittest.TestCase):
             f.write(content)
         return path
 
+    def _approve_triage(self, sm, train, mock_popen):
+        """Simulate triage BUILD approval so conductor can launch."""
+        if not train.needs_triage:
+            return
+        # Create a mock triage agent that returns BUILD
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = MagicMock()
+        triage_agent.proc.returncode = 0
+        triage_agent.get_output.return_value = "BUILD\nApproved"
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+        sm._train_phase_triage(train)
+        mock_popen.return_value = self._make_mock_proc()
+        sm._train_phase_conductor_launch(train)
+
     def _make_mock_proc(self, returncode=0, stdout="", stderr="", pid=12345):
         proc = MagicMock()
         proc.returncode = returncode
@@ -639,6 +655,9 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         sm._train_phase_conductor(train)
         self.assertEqual(train.spec_path, spec_path)
         self.assertEqual(train.branch, "feature/test-feature")
+        self.assertTrue(train.needs_triage)
+        # Approve triage and launch conductor
+        self._approve_triage(sm, train, mock_popen)
         self.assertIsNotNone(train.conductor)
 
     @patch("subprocess.Popen")
@@ -811,6 +830,7 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         })
         train = sm.trains[0]
         sm._train_phase_conductor(train)
+        self._approve_triage(sm, train, mock_popen)
         self.assertIsNone(train.branch)
         self.assertIsNone(train.conductor)
 
@@ -833,6 +853,7 @@ class TestTrainPipelineStateMachine(OrchestratorTestBase):
         })
         train = sm.trains[0]
         sm._train_phase_conductor(train)
+        self._approve_triage(sm, train, mock_popen)
         self.assertIsNone(train.branch)
         self.assertIsNone(train.conductor)
 
@@ -1369,6 +1390,8 @@ class TestSafetyGuards(OrchestratorTestBase):
             "working_dir": dev_dir,
         })
         sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        self._approve_triage(sm, train, mock_popen)
         self.assertIsNotNone(train.conductor)
 
 
@@ -1714,6 +1737,156 @@ class TestReadRejectionLog(OrchestratorTestBase):
         result = read_rejection_log(max_lines=3, project="p")
         lines = result.strip().split("\n")
         self.assertEqual(len(lines), 3)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Triage System
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestTriageSystem(OrchestratorTestBase):
+
+    def _setup_train_with_spec(self, sm):
+        """Helper: create a spec and assign it to train[0] as if conductor just picked it up."""
+        spec = self._write_spec("test_spec.json", {
+            "title": "test-feature",
+            "description": "Test feature",
+            "priority": "high",
+            "working_dir": self.tmpdir,
+        })
+        train = sm.trains[0]
+        train.spec_path = spec
+        train.branch = "feature/test-feature"
+        train.repo_dir = self.tmpdir
+        train.needs_triage = True
+        return train
+
+    @patch("subprocess.Popen")
+    def test_build_verdict_approves_spec(self, mock_popen):
+        """Triage BUILD verdict clears needs_triage, allowing conductor launch."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        # Simulate triage agent that has finished with BUILD verdict
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = self._make_mock_proc(returncode=0)
+        triage_agent.get_output.return_value = "BUILD\nThis is a good spec"
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)
+        self.assertIsNotNone(train.spec_path)  # spec still assigned
+
+    @patch("subprocess.Popen")
+    def test_reject_verdict_removes_spec(self, mock_popen):
+        """Triage REJECT verdict removes spec and resets pipeline."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = self._make_mock_proc(returncode=0)
+        triage_agent.get_output.return_value = "REJECT\nNot useful enough"
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset
+
+    @patch("subprocess.Popen")
+    def test_hold_verdict_moves_spec_to_drafts(self, mock_popen):
+        """Triage HOLD verdict moves spec to drafts directory."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = self._make_mock_proc(returncode=0)
+        triage_agent.get_output.return_value = "HOLD\nNeeds more detail"
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset
+        # Spec should be in drafts
+        drafts = os.listdir(config.DRAFTS_DIR) if os.path.isdir(config.DRAFTS_DIR) else []
+        self.assertEqual(len(drafts), 1)
+
+    @patch("subprocess.Popen")
+    def test_agent_failure_is_fail_open(self, mock_popen):
+        """Triage agent crash approves spec by default (fail-open)."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = self._make_mock_proc(returncode=1)
+        triage_agent.get_output.return_value = ""
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)  # approved by default
+        self.assertIsNotNone(train.spec_path)  # spec still assigned
+        self.assertEqual(train.triage_failures, 1)
+
+    @patch("subprocess.Popen")
+    def test_unrecognized_verdict_rejects(self, mock_popen):
+        """Unrecognized verdict is fail-secure: rejects the spec."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = True
+        triage_agent.proc = self._make_mock_proc(returncode=0)
+        triage_agent.get_output.return_value = "MAYBE\nI'm not sure"
+        triage_agent.save_log = MagicMock()
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertIsNone(train.spec_path)  # pipeline reset (rejected)
+
+    @patch("subprocess.Popen")
+    def test_triage_timeout_is_fail_open(self, mock_popen):
+        """Triage timeout approves spec by default with backoff."""
+        sm = self._make_station_manager()
+        train = self._setup_train_with_spec(sm)
+
+        triage_agent = MagicMock()
+        triage_agent.poll.return_value = False  # still running
+        triage_agent.is_timed_out.return_value = True
+        triage_agent.start_time = time.time() - 9999
+        triage_agent.proc = self._make_mock_proc()
+        triage_agent.proc.poll.return_value = None
+        train.triage = triage_agent
+
+        sm._train_phase_triage(train)
+        self.assertFalse(train.needs_triage)  # approved by default
+        self.assertEqual(train.triage_failures, 1)
+        self.assertGreater(train.triage_cooldown_until, time.time())
+
+    @patch("subprocess.Popen")
+    def test_conductor_picks_up_spec_and_sets_needs_triage(self, mock_popen):
+        """When conductor picks up a spec, it sets needs_triage = True."""
+        sm = self._make_station_manager()
+        # Write a spec for conductor to pick up
+        self._write_spec("20260330_test.json", {
+            "title": "test-feature",
+            "description": "Test",
+            "priority": "high",
+            "complexity": "high",
+            "working_dir": self.tmpdir,
+        })
+        config.DEVELOPMENT_DIR = self.tmpdir
+        config.SELF_PROJECT_DIR = "/nonexistent"
+        sm._git = MagicMock(return_value="")
+        sm._git_has_branch = MagicMock(return_value=False)
+        train = sm.trains[0]
+        sm._train_phase_conductor(train)
+        self.assertTrue(train.needs_triage)
+        self.assertIsNotNone(train.spec_path)
+        self.assertEqual(train.branch, "feature/test-feature")
 
 
 if __name__ == "__main__":

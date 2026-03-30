@@ -36,6 +36,44 @@ def activity(msg: str):
         pass
 
 
+# ─── Activity log cleanup utilities ──────────────────────────────────────────
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting characters from text for activity log readability."""
+    text = re.sub(r'[*_`#>\[\]\-]+', '', text)
+    return ' '.join(text.split())
+
+
+def _strip_reason_prefix(text: str) -> str:
+    """Strip verbose prefixes from agent decision reasons (e.g., 'Reasoning:', 'Why:')."""
+    patterns = [
+        r'^Why\s+.*?HOLD,\s+not\s+BUILD[\s:]*',
+        r'^Why\s+.*?REJECT[\s:]*',
+        r'^Why[\s:]*',
+        r'^[\w\s]*?Reasoning[\s:.\d]*',
+        r'^Reason[\s:]*',
+        r'^Analysis[\s:]*',
+    ]
+    result = text
+    for pattern in patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+        if result != text:
+            break
+    return result.strip()
+
+
+def _first_line_truncated(text: str, limit: int = 150) -> str:
+    """Extract first line of text and truncate to limit chars at word boundaries."""
+    first_line = text.split('\n')[0].strip()
+    if len(first_line) <= limit:
+        return first_line
+    truncated = first_line[:limit]
+    last_space = truncated.rfind(' ')
+    if last_space > limit - 30:
+        return first_line[:last_space] + "..."
+    return first_line[:limit - 3] + "..."
+
+
 # ─── Failure / rejection log persistence ─────────────────────────────────────
 
 def record_failure(title: str, reason: str):
@@ -223,6 +261,12 @@ class Train:
         # Agent slots
         self.conductor: AgentProcess | None = None
         self.inspector: AgentProcess | None = None
+        self.triage: AgentProcess | None = None
+
+        # Triage gate
+        self.needs_triage: bool = False
+        self.triage_failures: int = 0
+        self.triage_cooldown_until: float = 0.0
 
         # Per-train cooldowns
         self.conductor_cooldown_until: float = 0.0
@@ -239,6 +283,9 @@ class Train:
         self.file_edits.clear()
         self.edits_tallied = False
         self.rework_count = 0
+        self.needs_triage = False
+        self.triage_failures = 0
+        self.triage_cooldown_until = 0.0
         self.spec_timeout_count = 0
 
 
@@ -266,6 +313,7 @@ class StationManager:
         # Global agents (not per-train)
         self.active_agents: dict[str, AgentProcess | None] = {
             "dispatcher": None,
+            "triage": None,
             "signal": None,
             "station_manager": None,
             "ops": None,
@@ -1157,10 +1205,143 @@ class StationManager:
         branch_name = f"feature/{safe_title}"
         train.file_edits.clear()
         train.spec_path = spec_path
+        train.spec_started_at = time.time()
         train.branch = branch_name
         train.repo_dir = working_dir  # original project repo
         train.rework_count = 0
         train.spec_timeout_count = 0
+
+        # Route through triage gate before launching conductor
+        train.needs_triage = True
+
+    def _train_phase_triage(self, train: Train):
+        """Triage gate: evaluate whether a spec is worth building before launching Conductor."""
+        if not train.needs_triage:
+            return
+        if not train.spec_path or not train.branch:
+            return
+        if time.time() < train.triage_cooldown_until:
+            return
+
+        # Check if triage agent is still running
+        if train.triage is not None:
+            if train.triage.poll():
+                # Triage finished — process verdict
+                train.triage.save_log()
+                output = train.triage.get_output()
+                rc = train.triage.proc.returncode if train.triage.proc else "?"
+                train.triage = None
+
+                if rc != 0:
+                    # Triage agent failed — let spec through (fail-open) but with backoff
+                    activity(f"Triage:{train.train_id} — agent failed (rc={rc}), approving spec by default")
+                    train.needs_triage = False
+                    train.triage_failures += 1
+                    backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.triage_failures), config.MAX_ERROR_BACKOFF)
+                    train.triage_cooldown_until = time.time() + backoff
+                    return
+
+                verdict = output.strip().split("\n")[0].strip().upper() if output else ""
+                verdict = re.sub(r'[\*_`]+', '', verdict)  # strip markdown
+                reason = output.strip().split("\n", 1)[1].strip() if output and "\n" in output.strip() else ""
+
+                if verdict.startswith("BUILD"):
+                    train.needs_triage = False
+                    train.triage_failures = 0
+                elif verdict.startswith("REJECT"):
+                    spec_title = train.branch.removeprefix("feature/")
+                    reason_clean = _strip_markdown(_strip_reason_prefix(reason))
+                    reason_display = _first_line_truncated(reason_clean, limit=150)
+                    activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': {reason_display}")
+                    record_rejection(spec_title, reason[:300])
+                    if train.spec_path and os.path.exists(train.spec_path):
+                        os.remove(train.spec_path)
+                    train.reset_pipeline()
+                elif verdict.startswith("HOLD"):
+                    spec_title = train.branch.removeprefix("feature/")
+                    reason_clean = _strip_markdown(_strip_reason_prefix(reason))
+                    reason_display = _first_line_truncated(reason_clean, limit=150)
+                    activity(f"Triage:{train.train_id} — HOLD spec '{spec_title}': {reason_display}")
+                    if train.spec_path and os.path.exists(train.spec_path):
+                        os.makedirs(config.DRAFTS_DIR, exist_ok=True)
+                        dest = os.path.join(config.DRAFTS_DIR, os.path.basename(train.spec_path))
+                        shutil.move(train.spec_path, dest)
+                    train.reset_pipeline()
+                else:
+                    # Unrecognized verdict — fail-secure, reject
+                    spec_title = train.branch.removeprefix("feature/")
+                    fail_reason = f"Triage returned unrecognized verdict: {verdict[:50]}"
+                    activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': triage verdict parse error")
+                    record_rejection(spec_title, fail_reason)
+                    if train.spec_path and os.path.exists(train.spec_path):
+                        os.remove(train.spec_path)
+                    train.reset_pipeline()
+            elif train.triage.is_timed_out():
+                # Triage timed out — fail-open but with backoff
+                elapsed = time.time() - (train.triage.start_time or 0)
+                activity(f"OVERDUE [triage:{train.train_id}] after {elapsed:.0f}s — approving spec by default")
+                if train.triage.proc and train.triage.proc.poll() is None:
+                    train.triage.proc.terminate()
+                train.triage = None
+                train.needs_triage = False
+                train.triage_failures += 1
+                backoff = min(config.AGENT_ERROR_COOLDOWN * (2 ** train.triage_failures), config.MAX_ERROR_BACKOFF)
+                train.triage_cooldown_until = time.time() + backoff
+            return
+
+        # No triage agent running yet — launch one
+        try:
+            with open(train.spec_path) as f:
+                spec_data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Cannot read spec for triage %s: %s", train.spec_path, e)
+            train.needs_triage = False  # fail-open
+            return
+
+        working_dir = spec_data.get("working_dir", "")
+        recent_merges = self._git("log", "--oneline", "-15", cwd=working_dir) if os.path.isdir(working_dir) else "(none)"
+        rejected_specs = read_rejection_log(max_lines=5)
+        failed_specs = read_failure_log()
+
+        prompt = config.TRIAGE_PROMPT.format(
+            working_dir=working_dir,
+            spec_json=json.dumps(spec_data, indent=2),
+            rejected_specs=rejected_specs,
+            failed_specs=failed_specs,
+            recent_merges=recent_merges,
+        )
+        agent = self._launch_agent("triage", prompt, cwd=working_dir if os.path.isdir(working_dir) else None)
+        if agent is not None:
+            train.triage = agent
+            self.active_agents["triage"] = None  # track on train, not global
+        else:
+            train.needs_triage = False  # launch failed — fail-open
+
+    def _train_phase_conductor_launch(self, train: Train):
+        """Launch Conductor after triage approves the spec."""
+        if train.needs_triage:
+            return  # still waiting for triage
+        if not train.spec_path or not train.branch:
+            return
+        # Only launch if no worktree exists yet (first time through after triage)
+        if train.working_dir:
+            return  # already launched or in review pipeline
+        if self._is_train_agent_active(train, "conductor"):
+            return
+
+        spec_path = train.spec_path
+        working_dir = train.repo_dir
+        branch_name = train.branch
+
+        try:
+            with open(spec_path) as f:
+                spec_data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            train.reset_pipeline()
+            return
+
+        if not working_dir:
+            working_dir = spec_data.get("working_dir", "")
 
         # If the feature branch already exists with changes, skip Conductor → inspector
         if self._git_has_branch(branch_name, cwd=working_dir) and self._git_diff_trunk(branch_name, cwd=working_dir):
@@ -1184,6 +1365,7 @@ class StationManager:
             return
         train.working_dir = worktree_path
 
+        spec_title = spec_data.get("title", "untitled")
         spec_desc = spec_data.get("description", "")
         activity(f"Conductor:{train.train_id} — starting spec '{spec_title}' in {worktree_path}")
         spec_summary = spec_desc.split("\n")[0][:120].strip()
@@ -1774,6 +1956,8 @@ class StationManager:
                     self._train_phase_service_recovery(train)
                     self._train_phase_rework(train)
                     self._train_phase_conductor(train)
+                    self._train_phase_triage(train)
+                    self._train_phase_conductor_launch(train)
                     self._train_phase_inspector(train)
                     self._train_phase_entropy_check(train)
                     self._train_phase_station_manager_check(train)
