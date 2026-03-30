@@ -339,6 +339,16 @@ class StationManager:
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
 
+        # Per-tick caches — reset each tick to avoid redundant filesystem I/O
+        self._tick_id: int = 0
+        self._cached_backlog_count: int = 0
+        self._cached_backlog_count_tick: int = -1
+        self._cached_backlog_specs: list[str] = []
+        self._cached_backlog_specs_tick: int = -1
+        self._cached_backlog_specs_complexity: str | None = None
+        self._cached_open_bugs: list[dict] = []
+        self._cached_open_bugs_tick: int = -1
+
         # Don't run Dispatcher or Ops immediately on startup — wait for activity to accumulate
         self.last_launch_times["dispatcher"] = time.time()
         self.last_launch_times["ops"] = time.time()
@@ -458,6 +468,41 @@ class StationManager:
                         bugs.append(data)
                 except (json.JSONDecodeError, OSError):
                     continue
+        return bugs
+
+    # ─── Per-tick caches ────────────────────────────────────────────────
+
+    def _advance_tick(self):
+        """Advance the tick counter, invalidating all per-tick caches."""
+        self._tick_id += 1
+
+    def _get_cached_backlog_count(self) -> int:
+        """Return backlog spec count, cached for the current tick."""
+        if self._cached_backlog_count_tick == self._tick_id:
+            return self._cached_backlog_count
+        count = len(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json")))
+        self._cached_backlog_count = count
+        self._cached_backlog_count_tick = self._tick_id
+        return count
+
+    def _get_cached_backlog_specs(self, complexity: str | None = None) -> list[str]:
+        """Return backlog specs, cached for the current tick and complexity."""
+        if (self._cached_backlog_specs_tick == self._tick_id
+                and self._cached_backlog_specs_complexity == complexity):
+            return self._cached_backlog_specs
+        specs = self._backlog_specs(complexity=complexity)
+        self._cached_backlog_specs = specs
+        self._cached_backlog_specs_tick = self._tick_id
+        self._cached_backlog_specs_complexity = complexity
+        return specs
+
+    def _get_cached_open_bugs(self) -> list[dict]:
+        """Return open Signal bugs, cached for the current tick."""
+        if self._cached_open_bugs_tick == self._tick_id:
+            return self._cached_open_bugs
+        bugs = self._signal_open_bugs()
+        self._cached_open_bugs = bugs
+        self._cached_open_bugs_tick = self._tick_id
         return bugs
 
     def _is_agent_active(self, name: str) -> bool:
@@ -1427,7 +1472,7 @@ class StationManager:
             return
 
         # Skip if an open Signal bug already covers this
-        open_bugs = self._signal_open_bugs()
+        open_bugs = self._get_cached_open_bugs()
         if len(open_bugs) >= config.MAX_SRE_OPEN_BUGS:
             return
 
@@ -1461,7 +1506,7 @@ class StationManager:
         if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
 
-        open_bugs = self._signal_open_bugs()
+        open_bugs = self._get_cached_open_bugs()
         if open_bugs:
             existing_bugs_text = "\n".join(
                 f"- {bug.get('title', '(untitled)')}" for bug in open_bugs
@@ -1805,6 +1850,9 @@ class StationManager:
                     activity("RESUMED — agents/pause file removed")
                     self._pause_logged = False
 
+                # Advance tick — invalidates all per-tick caches
+                self._advance_tick()
+
                 # Per-train phases
                 for train in self.trains:
                     self._train_phase_service_recovery(train)
@@ -1837,12 +1885,12 @@ class StationManager:
                         active.append(f"conductor:{train.train_id}")
                     if train.inspector is not None:
                         active.append(f"inspector:{train.train_id}")
-                specs = self._backlog_specs()
-                if active or specs:
+                backlog_count = self._get_cached_backlog_count()
+                if active or backlog_count:
                     log.info(
                         "Tick: active=[%s] backlog=%d",
                         ", ".join(active) if active else "none",
-                        len(specs),
+                        backlog_count,
                     )
 
                 time.sleep(config.TICK_INTERVAL)
