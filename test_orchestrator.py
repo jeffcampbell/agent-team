@@ -1969,5 +1969,90 @@ class TestPickDispatcherProject(OrchestratorTestBase):
         self.assertIsNone(result)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SLA Enforcement Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSpecSLA(OrchestratorTestBase):
+    """Test spec wall-clock SLA enforcement."""
+
+    @patch("subprocess.Popen")
+    def test_spec_within_sla_not_dropped(self, mock_popen):
+        sm = self._make_station_manager()
+        train = sm.trains[0]
+        train.spec_path = "/tmp/fake_spec.json"
+        train.branch = "feature/test"
+        train.spec_started_at = time.time() - 100  # well within 1800s SLA
+        sm._check_spec_sla()
+        self.assertIsNotNone(train.spec_path)
+
+    @patch("subprocess.Popen")
+    def test_spec_exceeding_sla_dropped(self, mock_popen):
+        sm = self._make_station_manager()
+        train = sm.trains[0]
+        spec = self._write_spec("sla_test.json", {
+            "title": "sla-test", "description": "test",
+            "priority": "medium", "complexity": "high",
+        })
+        train.spec_path = spec
+        train.branch = "feature/sla-test"
+        train.spec_started_at = time.time() - (config.SPEC_SLA_SECONDS + 120)
+        sm._check_spec_sla()
+        self.assertIsNone(train.spec_path)
+        self.assertIsNone(train.branch)
+
+
+class TestCheckpointSLA(OrchestratorTestBase):
+    """Test checkpoint idle SLA enforcement."""
+
+    @patch("subprocess.Popen")
+    def test_active_agents_reset_checkpoint_timer(self, mock_popen):
+        sm = self._make_station_manager()
+        train = sm.trains[0]
+        train.spec_path = "/tmp/fake_spec.json"
+        train.branch = "feature/test"
+        train.checkpoint_idle_since = time.time() - 500
+        # Simulate active conductor
+        train.conductor = MagicMock()
+        sm._check_checkpoint_sla()
+        self.assertEqual(train.checkpoint_idle_since, 0.0)
+
+    @patch("subprocess.Popen")
+    def test_checkpoint_sla_removes_stale_feedback(self, mock_popen):
+        sm = self._make_station_manager()
+        train = sm.trains[0]
+        train.spec_path = "/tmp/fake_spec.json"
+        train.branch = "feature/checkpoint-test"
+        self._write_feedback(train.branch, "CHANGES_REQUESTED\nFix stuff")
+        train.checkpoint_idle_since = time.time() - (config.CHECKPOINT_SLA_SECONDS + 120)
+        train.conductor = None
+        train.inspector = None
+        sm._check_checkpoint_sla()
+        feedback_path = sm._feedback_path(train.branch)
+        self.assertFalse(os.path.exists(feedback_path))
+        self.assertEqual(train.checkpoint_idle_since, 0.0)
+
+
+class TestIdleSLA(OrchestratorTestBase):
+    """Test all-idle SLA enforcement."""
+
+    @patch("subprocess.Popen")
+    def test_busy_train_resets_idle_timer(self, mock_popen):
+        sm = self._make_station_manager()
+        sm.all_idle_since = time.time() - 50000
+        train = sm.trains[0]
+        train.branch = "feature/busy"
+        sm._check_idle_sla()
+        self.assertEqual(sm.all_idle_since, 0.0)
+
+    @patch("subprocess.Popen")
+    def test_idle_sla_clears_dispatcher_throttle(self, mock_popen):
+        sm = self._make_station_manager()
+        sm.last_launch_times["dispatcher"] = time.time()
+        sm.all_idle_since = time.time() - (config.IDLE_SLA_SECONDS + 10)
+        sm._check_idle_sla()
+        self.assertNotIn("dispatcher", sm.last_launch_times)
+
+
 if __name__ == "__main__":
     unittest.main()

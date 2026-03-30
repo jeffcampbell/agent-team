@@ -105,6 +105,11 @@ SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator it
 PAUSE_FILE = os.path.join(BASE_DIR, "agents", "pause")  # touch to pause, rm to resume
 SERVICE_RESTART_TIMEOUT = 300      # seconds before service restart is killed
 
+# ─── SLA Thresholds ─────────────────────────────────────────────────────────
+SPEC_SLA_SECONDS = 1800             # 30 min wall-clock limit for a spec across all phases
+CHECKPOINT_SLA_SECONDS = 120        # 2 min max idle at checkpoint before intervention
+IDLE_SLA_SECONDS = 14400            # 4 hours all-idle before triggering dispatcher
+
 # ─── Dashboard (optional) ────────────────────────────────────────────────
 DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 

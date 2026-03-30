@@ -289,6 +289,10 @@ class Train:
         self.conductor_failures: int = 0
         self.inspector_failures: int = 0
 
+        # SLA tracking
+        self.spec_started_at: float = 0.0
+        self.checkpoint_idle_since: float = 0.0
+
     def reset_pipeline(self):
         """Clear state after merge/cancel/entropy."""
         self.spec_path = None
@@ -299,6 +303,8 @@ class Train:
         self.edits_tallied = False
         self.rework_count = 0
         self.spec_timeout_count = 0
+        self.spec_started_at = 0.0
+        self.checkpoint_idle_since = 0.0
 
 
 class StationManager:
@@ -361,6 +367,9 @@ class StationManager:
 
         # Uptime tracking (used by dashboard)
         self.start_time: float = time.time()
+
+        # SLA: track when all trains went idle
+        self.all_idle_since: float = 0.0
 
         # Per-tick caches — reset each tick to avoid redundant filesystem I/O
         self._tick_id: int = 0
@@ -1301,6 +1310,7 @@ class StationManager:
         branch_name = f"feature/{safe_title}"
         train.file_edits.clear()
         train.spec_path = spec_path
+        train.spec_started_at = time.time()
         train.branch = branch_name
         train.repo_dir = working_dir  # original project repo
         train.rework_count = 0
@@ -1848,6 +1858,127 @@ class StationManager:
         if agent is not None:
             self._ops_head_before = self._git_last_commit(cwd=config.BASE_DIR)
 
+    # ─── SLA enforcement ─────────────────────────────────────────────────
+
+    def _check_spec_sla(self):
+        """Drop specs that exceed the wall-clock SLA across all pipeline phases."""
+        now = time.time()
+        for train in self.trains:
+            if not train.spec_path or train.spec_started_at <= 0:
+                continue
+            elapsed = now - train.spec_started_at
+            # Add 60s grace period to reduce false positives from timing jitter (tick interval is 10s)
+            if elapsed < config.SPEC_SLA_SECONDS + 60:
+                continue
+
+            spec_name = os.path.basename(train.spec_path) if train.spec_path else "unknown"
+            activity(
+                f"SLA BREACH [{train.train_id}] — spec '{spec_name}' exceeded "
+                f"{config.SPEC_SLA_SECONDS}s wall-clock ({int(elapsed)}s elapsed). Dropping."
+            )
+
+            # Kill any active agents on this train
+            for role in ("conductor", "inspector"):
+                agent = getattr(train, role)
+                if agent and agent.proc and agent.proc.poll() is None:
+                    agent.proc.terminate()
+                    try:
+                        agent.proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        agent.proc.kill()
+                        agent.proc.wait()
+                    agent.save_log(marker="[SLA BREACH]")
+                setattr(train, role, None)
+
+            # Remove the in-progress spec and record failure
+            branch_name = train.branch.removeprefix("feature/") if train.branch else spec_name
+            record_failure(branch_name, f"SLA breach ({int(elapsed)}s elapsed)")
+            if train.spec_path:
+                ip = train.spec_path + ".in_progress"
+                if os.path.exists(ip):
+                    os.remove(ip)
+
+            # Clean up worktree and branch
+            repo = train.repo_dir or train.working_dir
+            branch = train.branch
+            self._remove_worktree(train.repo_dir, train.working_dir)
+            if repo and branch and self._git_has_branch(branch, cwd=repo):
+                self._git("branch", "-D", branch, cwd=repo)
+
+            fb = self._feedback_path(branch) if branch else None
+            if fb and os.path.exists(fb):
+                os.remove(fb)
+
+            train.reset_pipeline()
+
+    def _check_checkpoint_sla(self):
+        """Detect trains stuck at checkpoint (feedback exists, no agents active)."""
+        now = time.time()
+        for train in self.trains:
+            if not train.branch or not train.spec_path:
+                continue
+            # Only applies when no agents are active on this train
+            if train.conductor is not None or train.inspector is not None:
+                train.checkpoint_idle_since = 0.0
+                continue
+
+            feedback_path = self._feedback_path(train.branch)
+            if not os.path.exists(feedback_path):
+                train.checkpoint_idle_since = 0.0
+                continue
+
+            # Train has a spec, feedback exists, but no agents running = stuck at checkpoint
+            if train.checkpoint_idle_since <= 0:
+                train.checkpoint_idle_since = now
+                continue
+
+            idle_for = now - train.checkpoint_idle_since
+            # Add 60s grace period to prevent timing jitter from removing approved feedback prematurely
+            if idle_for < config.CHECKPOINT_SLA_SECONDS + 60:
+                continue
+
+            activity(
+                f"SLA CHECKPOINT [{train.train_id}] — idle at checkpoint for "
+                f"{int(idle_for)}s (limit {config.CHECKPOINT_SLA_SECONDS}s). "
+                f"Removing stale feedback to retry."
+            )
+            # Remove the feedback file so the pipeline re-evaluates
+            os.remove(feedback_path)
+            train.checkpoint_idle_since = 0.0
+
+    def _check_idle_sla(self):
+        """If all trains idle and backlog empty for too long, prompt dispatcher."""
+        any_busy = any(t.branch for t in self.trains)
+        backlog_count = len(self._backlog_specs())
+        has_backlog = backlog_count > 0
+
+        if any_busy or has_backlog:
+            self.all_idle_since = 0.0
+            return
+
+        now = time.time()
+        if self.all_idle_since <= 0:
+            self.all_idle_since = now
+            return
+
+        idle_for = now - self.all_idle_since
+        if idle_for < config.IDLE_SLA_SECONDS:
+            return
+
+        # Don't fire if service is suspended (rate-limited)
+        if time.time() < self.sleep_until:
+            return
+        # Don't fire if dispatcher is active or in cooldown
+        if self._is_agent_active("dispatcher"):
+            return
+        if "dispatcher" in self.agent_cooldowns and now < self.agent_cooldowns["dispatcher"]:
+            return
+
+        activity(f"SLA IDLE — all trains idle for {int(idle_for)}s, triggering dispatcher")
+        self.all_idle_since = 0.0
+        # Clear the dispatcher's last launch time so it fires immediately
+        self.last_launch_times.pop("dispatcher", None)
+
     # ─── Main loop ───────────────────────────────────────────────────────
 
     def run(self):
@@ -1924,6 +2055,11 @@ class StationManager:
                     self._train_phase_inspector(train)
                     self._train_phase_entropy_check(train)
                     self._train_phase_station_manager_check(train)
+
+                # SLA checks
+                self._check_spec_sla()
+                self._check_checkpoint_sla()
+                self._check_idle_sla()
 
                 # Deferred ops restart — fire once all conductors have finished
                 if self.restart_pending:
