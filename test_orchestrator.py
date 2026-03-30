@@ -32,6 +32,9 @@ _orig_railway_project = config.RAILWAY_PROJECT
 _orig_service_restart_cmd = config.SERVICE_RESTART_CMD
 _orig_app_log_glob = config.APP_LOG_GLOB
 _orig_train_config = config.TRAIN_CONFIG
+_orig_failure_log = config.FAILURE_LOG_PATH
+_orig_rejection_log = config.REJECTION_LOG_PATH
+_orig_drafts_dir = config.DRAFTS_DIR
 
 
 class OrchestratorTestBase(unittest.TestCase):
@@ -43,6 +46,9 @@ class OrchestratorTestBase(unittest.TestCase):
         config.REVIEW_DIR = os.path.join(self.tmpdir, "review")
         config.LOGS_DIR = os.path.join(self.tmpdir, "logs")
         config.ACTIVITY_LOG = os.path.join(self.tmpdir, "activity.log")
+        config.FAILURE_LOG_PATH = os.path.join(self.tmpdir, "failed_specs.txt")
+        config.REJECTION_LOG_PATH = os.path.join(self.tmpdir, "rejected_specs.txt")
+        config.DRAFTS_DIR = os.path.join(self.tmpdir, "drafts")
         config.RAILWAY_PROJECT = ""
         config.SERVICE_RESTART_CMD = ""
         config.APP_LOG_GLOB = ""
@@ -77,6 +83,9 @@ class OrchestratorTestBase(unittest.TestCase):
         config.SERVICE_RESTART_CMD = _orig_service_restart_cmd
         config.APP_LOG_GLOB = _orig_app_log_glob
         config.TRAIN_CONFIG = _orig_train_config
+        config.FAILURE_LOG_PATH = _orig_failure_log
+        config.REJECTION_LOG_PATH = _orig_rejection_log
+        config.DRAFTS_DIR = _orig_drafts_dir
 
     # ── Helpers ──
 
@@ -1623,6 +1632,88 @@ class TestSpecTimeoutHandling(OrchestratorTestBase):
         sm._kill_timed_out_train_agent(train, "conductor", agent)
         self.assertEqual(train.conductor_failures, 1)
         self.assertGreater(train.conductor_cooldown_until, time.time())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Failure / Rejection Log Persistence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRecordFailure(OrchestratorTestBase):
+    def test_writes_to_failure_log(self):
+        from orchestrator import record_failure
+        record_failure("my-spec", "timed out")
+        with open(config.FAILURE_LOG_PATH) as f:
+            content = f.read()
+        self.assertIn("my-spec", content)
+        self.assertIn("timed out", content)
+
+    def test_appends_multiple_entries(self):
+        from orchestrator import record_failure
+        record_failure("spec-a", "reason-a")
+        record_failure("spec-b", "reason-b")
+        with open(config.FAILURE_LOG_PATH) as f:
+            lines = f.readlines()
+        self.assertEqual(len(lines), 2)
+
+    def test_handles_missing_directory_gracefully(self):
+        from orchestrator import record_failure
+        config.FAILURE_LOG_PATH = "/nonexistent/dir/fail.txt"
+        record_failure("spec", "reason")  # should not raise
+
+
+class TestRecordRejection(OrchestratorTestBase):
+    def test_writes_to_rejection_log(self):
+        from orchestrator import record_rejection
+        record_rejection("my-spec", "low priority", project="demo")
+        with open(config.REJECTION_LOG_PATH) as f:
+            content = f.read()
+        self.assertIn("my-spec", content)
+        self.assertIn("low priority", content)
+        self.assertIn("demo", content)
+
+    def test_empty_project_still_writes(self):
+        from orchestrator import record_rejection
+        record_rejection("spec", "reason")
+        with open(config.REJECTION_LOG_PATH) as f:
+            content = f.read()
+        self.assertIn("spec", content)
+
+
+class TestReadFailureLog(OrchestratorTestBase):
+    def test_returns_none_when_no_file(self):
+        from orchestrator import read_failure_log
+        self.assertEqual(read_failure_log(), "(none)")
+
+    def test_returns_last_n_lines(self):
+        from orchestrator import record_failure, read_failure_log
+        for i in range(20):
+            record_failure(f"spec-{i}", "reason")
+        result = read_failure_log(max_lines=5)
+        lines = result.strip().split("\n")
+        self.assertEqual(len(lines), 5)
+        self.assertIn("spec-19", lines[-1])
+
+
+class TestReadRejectionLog(OrchestratorTestBase):
+    def test_returns_none_when_no_file(self):
+        from orchestrator import read_rejection_log
+        self.assertEqual(read_rejection_log(), "(none)")
+
+    def test_filters_by_project(self):
+        from orchestrator import record_rejection, read_rejection_log
+        record_rejection("spec-a", "reason", project="alpha")
+        record_rejection("spec-b", "reason", project="beta")
+        result = read_rejection_log(project="alpha")
+        self.assertIn("spec-a", result)
+        self.assertNotIn("spec-b", result)
+
+    def test_respects_max_lines(self):
+        from orchestrator import record_rejection, read_rejection_log
+        for i in range(10):
+            record_rejection(f"spec-{i}", "reason", project="p")
+        result = read_rejection_log(max_lines=3, project="p")
+        lines = result.strip().split("\n")
+        self.assertEqual(len(lines), 3)
 
 
 if __name__ == "__main__":

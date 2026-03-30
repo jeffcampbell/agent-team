@@ -36,6 +36,69 @@ def activity(msg: str):
         pass
 
 
+# ─── Failure / rejection log persistence ─────────────────────────────────────
+
+def record_failure(title: str, reason: str):
+    """Append a failure entry to the persistent failure log."""
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    line = f"{ts} | {title} | {reason}\n"
+    try:
+        with open(config.FAILURE_LOG_PATH, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def record_rejection(title: str, reason: str, project: str = ""):
+    """Append a rejection entry to the persistent rejection log."""
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    line = f"{ts} | {project} | {title} | {reason}\n"
+    try:
+        with open(config.REJECTION_LOG_PATH, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def read_rejection_log(max_lines: int = 5, project: str = "", max_age_days: int = 7) -> str:
+    """Read recent rejection log entries, filtered by project and age."""
+    try:
+        with open(config.REJECTION_LOG_PATH) as f:
+            lines = f.readlines()
+    except (OSError, FileNotFoundError):
+        return "(none)"
+
+    if project:
+        lines = [l for l in lines if f"| {project} |" in l]
+
+    if max_age_days > 0:
+        cutoff = time.time() - (max_age_days * 86400)
+        filtered = []
+        for line in lines:
+            try:
+                date_str = line.split("|")[0].strip()
+                entry_time = time.mktime(time.strptime(date_str, "%Y-%m-%d %H:%M"))
+                if entry_time >= cutoff:
+                    filtered.append(line)
+            except (ValueError, IndexError):
+                filtered.append(line)
+        lines = filtered
+
+    recent = lines[-max_lines:] if len(lines) > max_lines else lines
+    return "".join(recent).strip() or "(none)"
+
+
+def read_failure_log(max_lines: int = 15) -> str:
+    """Read the last N lines from the failure log for dispatcher context."""
+    try:
+        with open(config.FAILURE_LOG_PATH) as f:
+            lines = f.readlines()
+        recent = lines[-max_lines:] if len(lines) > max_lines else lines
+        return "".join(recent).strip() or "(none)"
+    except (OSError, FileNotFoundError):
+        return "(none)"
+
+
 # Pattern: match lines containing ERROR/WARNING/CRITICAL/FATAL (case-insensitive)
 _WATCHER_PATTERN = re.compile(r'\b(ERROR|WARNING|WARN|CRITICAL|FATAL)\b', re.IGNORECASE)
 
