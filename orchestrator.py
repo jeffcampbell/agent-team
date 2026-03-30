@@ -135,6 +135,29 @@ def read_failure_log(max_lines: int = 15) -> str:
         return "(none)"
 
 
+# ─── Project scheduling ──────────────────────────────────────────────────────
+
+def _is_in_schedule_window(schedule: str | None, now_hour: int | None = None) -> bool:
+    """Check if current hour falls within a schedule string like '9-17' or '22-2'.
+
+    None or empty means always eligible. Midnight wraparound is supported.
+    Malformed strings are treated as always eligible (fail-open).
+    """
+    if not schedule:
+        return True
+    if now_hour is None:
+        now_hour = time.localtime().tm_hour
+    try:
+        start, end = schedule.split("-")
+        start_h, end_h = int(start), int(end)
+    except (ValueError, AttributeError):
+        return True
+    if start_h <= end_h:
+        return start_h <= now_hour <= end_h
+    else:
+        return now_hour >= start_h or now_hour <= end_h
+
+
 # Pattern: match lines containing ERROR/WARNING/CRITICAL/FATAL (case-insensitive)
 _WATCHER_PATTERN = re.compile(r'\b(ERROR|WARNING|WARN|CRITICAL|FATAL)\b', re.IGNORECASE)
 
@@ -1122,22 +1145,63 @@ class StationManager:
 
     # ─── Phases ──────────────────────────────────────────────────────────
 
+    def _pick_dispatcher_project(self) -> str | None:
+        """Select which project the dispatcher should generate a spec for.
+
+        If projects.json exists, scheduled projects in their active window get
+        top priority, then unscheduled projects by priority. Falls back to
+        DEFAULT_PROJECT when no projects.json is present.
+        """
+        projects = config.load_projects()
+        if not projects:
+            default_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
+            if os.path.isdir(default_dir):
+                return default_dir
+            if os.path.isdir(config.DEVELOPMENT_DIR):
+                return config.DEVELOPMENT_DIR
+            return None
+
+        now_hour = time.localtime().tm_hour
+        candidates = []
+        for name, proj in projects.items():
+            if proj.get("paused"):
+                continue
+            path = os.path.expanduser(proj.get("path", ""))
+            if not os.path.isdir(path):
+                continue
+            priority = proj.get("priority", 999)
+            schedule = proj.get("schedule")
+            in_window = _is_in_schedule_window(schedule, now_hour)
+            candidates.append((priority, name, path, schedule, in_window))
+
+        if not candidates:
+            return None
+
+        scheduled_active = [(p, n, path) for p, n, path, sched, active in candidates if sched and active]
+        if scheduled_active:
+            scheduled_active.sort(key=lambda x: x[0])
+            return scheduled_active[0][2]
+
+        unscheduled = [(p, n, path) for p, n, path, sched, active in candidates if not sched]
+        if unscheduled:
+            unscheduled.sort(key=lambda x: x[0])
+            return unscheduled[0][2]
+
+        return None
+
     def _phase_dispatcher(self):
         """If backlog is empty and no Dispatcher running, launch Dispatcher agent."""
         if self._is_agent_active("dispatcher"):
             return
-        # Don't log intent if Dispatcher is in cooldown — _launch_agent would silently skip
         if "dispatcher" in self.agent_cooldowns and time.time() < self.agent_cooldowns["dispatcher"]:
             return
         if self._backlog_specs():
             return
 
-        # Default to configured project if no specific project context
-        default_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
-        if not os.path.isdir(default_dir):
-            default_dir = config.DEVELOPMENT_DIR
+        project_dir = self._pick_dispatcher_project()
+        if not project_dir:
+            return
 
-        # Don't generate new specs while any train has an active pipeline
         active_trains = [t for t in self.trains if t.branch]
         if active_trains:
             train_ids = ", ".join(t.train_id for t in active_trains)
@@ -1147,7 +1211,6 @@ class StationManager:
                 self._dispatcher_skip_logged_trains = key
             return
 
-        # Use the shortest dispatcher interval among idle train types
         now = time.time()
         idle_types = set(t.train_type for t in self.trains if not t.branch)
         if idle_types:
@@ -1162,16 +1225,16 @@ class StationManager:
             return
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        app_logs = self._read_app_log_tail(default_dir) or "(no app.log found)"
+        app_logs = self._read_app_log_tail(project_dir) or "(no app.log found)"
         prompt = config.DISPATCHER_PROMPT.format(
             timestamp=ts,
-            working_dir=default_dir,
+            working_dir=project_dir,
             backlog_dir=config.BACKLOG_DIR,
             app_logs=app_logs,
         )
-        agent = self._launch_agent("dispatcher", prompt, cwd=default_dir)
+        agent = self._launch_agent("dispatcher", prompt, cwd=project_dir)
         if agent is not None:
-            activity(f"Dispatcher — backlog empty, generating spec for {default_dir}")
+            activity(f"Dispatcher — backlog empty, generating spec for {project_dir}")
 
     def _train_phase_conductor(self, train: Train):
         """If backlog has specs and no Conductor running on this train, pick a spec and launch."""
