@@ -1794,5 +1794,66 @@ class TestReadRejectionLog(OrchestratorTestBase):
         self.assertEqual(len(lines), 3)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-Tick Caching
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPerTickCaching(OrchestratorTestBase):
+
+    @patch("subprocess.Popen")
+    def test_backlog_count_cached_within_tick(self, mock_popen):
+        sm = self._make_station_manager()
+        self._write_spec("spec1.json", {"title": "a", "priority": "high"})
+        self._write_spec("spec2.json", {"title": "b", "priority": "low"})
+        count1 = sm._get_cached_backlog_count()
+        # Add another spec — count should stay cached
+        self._write_spec("spec3.json", {"title": "c", "priority": "medium"})
+        count2 = sm._get_cached_backlog_count()
+        self.assertEqual(count1, 2)
+        self.assertEqual(count2, 2)  # still cached
+
+    @patch("subprocess.Popen")
+    def test_backlog_count_invalidated_on_new_tick(self, mock_popen):
+        sm = self._make_station_manager()
+        self._write_spec("spec1.json", {"title": "a", "priority": "high"})
+        count1 = sm._get_cached_backlog_count()
+        self._write_spec("spec2.json", {"title": "b", "priority": "low"})
+        sm._advance_tick()
+        count2 = sm._get_cached_backlog_count()
+        self.assertEqual(count1, 1)
+        self.assertEqual(count2, 2)
+
+    @patch("subprocess.Popen")
+    def test_backlog_specs_cached_within_tick(self, mock_popen):
+        sm = self._make_station_manager()
+        self._write_spec("spec1.json", {"title": "a", "priority": "high"})
+        specs1 = sm._get_cached_backlog_specs()
+        self._write_spec("spec2.json", {"title": "b", "priority": "low"})
+        specs2 = sm._get_cached_backlog_specs()
+        self.assertEqual(len(specs1), 1)
+        self.assertIs(specs1, specs2)  # same object — cached
+
+    @patch("subprocess.Popen")
+    def test_open_bugs_cached_within_tick(self, mock_popen):
+        sm = self._make_station_manager()
+        self._write_spec("bug1.json", {"title": "bug", "created_by": "signal", "priority": "high"})
+        bugs1 = sm._get_cached_open_bugs()
+        self._write_spec("bug2.json", {"title": "bug2", "created_by": "signal", "priority": "high"})
+        bugs2 = sm._get_cached_open_bugs()
+        self.assertEqual(len(bugs1), 1)
+        self.assertIs(bugs1, bugs2)  # same object — cached
+
+    @patch("subprocess.Popen")
+    def test_open_bugs_refreshed_after_tick_advance(self, mock_popen):
+        sm = self._make_station_manager()
+        self._write_spec("bug1.json", {"title": "bug", "created_by": "signal", "priority": "high"})
+        bugs1 = sm._get_cached_open_bugs()
+        sm._advance_tick()
+        self._write_spec("bug2.json", {"title": "bug2", "created_by": "signal", "priority": "high"})
+        bugs2 = sm._get_cached_open_bugs()
+        self.assertEqual(len(bugs1), 1)
+        self.assertEqual(len(bugs2), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
