@@ -35,6 +35,7 @@ _orig_train_config = config.TRAIN_CONFIG
 _orig_failure_log = config.FAILURE_LOG_PATH
 _orig_rejection_log = config.REJECTION_LOG_PATH
 _orig_drafts_dir = config.DRAFTS_DIR
+_orig_projects_config = config.PROJECTS_CONFIG_PATH
 
 
 class OrchestratorTestBase(unittest.TestCase):
@@ -52,6 +53,7 @@ class OrchestratorTestBase(unittest.TestCase):
         config.RAILWAY_PROJECT = ""
         config.SERVICE_RESTART_CMD = ""
         config.APP_LOG_GLOB = ""
+        config.PROJECTS_CONFIG_PATH = os.path.join(self.tmpdir, "projects.json")
         # Ensure default train config has at least 1 regular train
         config.TRAIN_CONFIG = {
             "regular": {
@@ -86,6 +88,7 @@ class OrchestratorTestBase(unittest.TestCase):
         config.FAILURE_LOG_PATH = _orig_failure_log
         config.REJECTION_LOG_PATH = _orig_rejection_log
         config.DRAFTS_DIR = _orig_drafts_dir
+        config.PROJECTS_CONFIG_PATH = _orig_projects_config
 
     # ── Helpers ──
 
@@ -1853,6 +1856,117 @@ class TestPerTickCaching(OrchestratorTestBase):
         bugs2 = sm._get_cached_open_bugs()
         self.assertEqual(len(bugs1), 1)
         self.assertEqual(len(bugs2), 2)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Schedule Window & Project Scheduling
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestScheduleWindow(unittest.TestCase):
+    def test_none_schedule_always_eligible(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window(None, now_hour=12))
+
+    def test_empty_schedule_always_eligible(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window("", now_hour=12))
+
+    def test_in_window_normal_range(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window("9-17", now_hour=12))
+
+    def test_outside_window_normal_range(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertFalse(_is_in_schedule_window("9-17", now_hour=20))
+
+    def test_midnight_wraparound_in_window_late(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window("22-2", now_hour=23))
+
+    def test_midnight_wraparound_in_window_early(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window("22-2", now_hour=1))
+
+    def test_midnight_wraparound_outside(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertFalse(_is_in_schedule_window("22-2", now_hour=12))
+
+    def test_malformed_schedule_fail_open(self):
+        from orchestrator import _is_in_schedule_window
+        self.assertTrue(_is_in_schedule_window("not-a-schedule", now_hour=12))
+
+
+class TestPickDispatcherProject(OrchestratorTestBase):
+
+    def _write_projects_json(self, projects: dict):
+        with open(config.PROJECTS_CONFIG_PATH, "w") as f:
+            json.dump({"projects": projects}, f)
+
+    @patch("subprocess.Popen")
+    def test_falls_back_to_default_project_when_no_projects_json(self, mock_popen):
+        sm = self._make_station_manager()
+        project_dir = os.path.join(self.tmpdir, "myproject")
+        os.makedirs(project_dir)
+        config.DEVELOPMENT_DIR = self.tmpdir
+        config.DEFAULT_PROJECT = "myproject"
+        result = sm._pick_dispatcher_project()
+        self.assertEqual(result, project_dir)
+
+    @patch("subprocess.Popen")
+    def test_scheduled_project_in_window_wins(self, mock_popen):
+        sm = self._make_station_manager()
+        proj_a = os.path.join(self.tmpdir, "alpha")
+        proj_b = os.path.join(self.tmpdir, "beta")
+        os.makedirs(proj_a)
+        os.makedirs(proj_b)
+        self._write_projects_json({
+            "alpha": {"path": proj_a, "priority": 2},
+            "beta": {"path": proj_b, "priority": 1, "schedule": "9-17"},
+        })
+        with patch("time.localtime") as mock_time:
+            mock_time.return_value = time.struct_time((2026, 3, 30, 12, 0, 0, 0, 89, 0))
+            result = sm._pick_dispatcher_project()
+        self.assertEqual(result, proj_b)
+
+    @patch("subprocess.Popen")
+    def test_unscheduled_project_when_no_active_schedule(self, mock_popen):
+        sm = self._make_station_manager()
+        proj_a = os.path.join(self.tmpdir, "alpha")
+        proj_b = os.path.join(self.tmpdir, "beta")
+        os.makedirs(proj_a)
+        os.makedirs(proj_b)
+        self._write_projects_json({
+            "alpha": {"path": proj_a, "priority": 1},
+            "beta": {"path": proj_b, "priority": 2, "schedule": "22-2"},
+        })
+        with patch("time.localtime") as mock_time:
+            mock_time.return_value = time.struct_time((2026, 3, 30, 12, 0, 0, 0, 89, 0))
+            result = sm._pick_dispatcher_project()
+        self.assertEqual(result, proj_a)
+
+    @patch("subprocess.Popen")
+    def test_paused_project_skipped(self, mock_popen):
+        sm = self._make_station_manager()
+        proj = os.path.join(self.tmpdir, "paused_proj")
+        os.makedirs(proj)
+        self._write_projects_json({
+            "paused_proj": {"path": proj, "priority": 1, "paused": True},
+        })
+        result = sm._pick_dispatcher_project()
+        self.assertIsNone(result)
+
+    @patch("subprocess.Popen")
+    def test_returns_none_when_all_schedules_inactive(self, mock_popen):
+        sm = self._make_station_manager()
+        proj = os.path.join(self.tmpdir, "night_proj")
+        os.makedirs(proj)
+        self._write_projects_json({
+            "night_proj": {"path": proj, "priority": 1, "schedule": "22-2"},
+        })
+        with patch("time.localtime") as mock_time:
+            mock_time.return_value = time.struct_time((2026, 3, 30, 12, 0, 0, 0, 89, 0))
+            result = sm._pick_dispatcher_project()
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

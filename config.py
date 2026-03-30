@@ -1,5 +1,6 @@
 """Agent prompt definitions and constants for the Yamanote orchestrator."""
 
+import json
 import os
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
@@ -14,6 +15,22 @@ REJECTION_LOG_PATH = os.path.join(BASE_DIR, "agents", "rejected_specs.txt")
 DRAFTS_DIR = os.path.join(BASE_DIR, "agents", "drafts")
 DEVELOPMENT_DIR = os.environ.get("AGENT_TEAM_DEV_DIR", os.path.expanduser("~/Development"))
 DEFAULT_PROJECT = os.environ.get("AGENT_TEAM_DEFAULT_PROJECT", "")
+
+# ─── Project scheduling ──────────────────────────────────────────────────────
+
+PROJECTS_CONFIG_PATH = os.path.join(BASE_DIR, "projects.json")
+
+
+def load_projects() -> dict:
+    """Load project definitions from projects.json. Returns empty dict if missing."""
+    if not os.path.isfile(PROJECTS_CONFIG_PATH):
+        return {}
+    try:
+        with open(PROJECTS_CONFIG_PATH) as f:
+            data = json.load(f)
+        return data.get("projects", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 # ─── Timing ──────────────────────────────────────────────────────────────────
 
