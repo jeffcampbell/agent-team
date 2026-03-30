@@ -1625,5 +1625,83 @@ class TestSpecTimeoutHandling(OrchestratorTestBase):
         self.assertGreater(train.conductor_cooldown_until, time.time())
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Activity Log Cleanup Utilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestStripMarkdown(unittest.TestCase):
+    def test_removes_bold_and_italic(self):
+        from orchestrator import _strip_markdown
+        self.assertEqual(_strip_markdown("**bold** and *italic*"), "bold and italic")
+
+    def test_removes_code_and_headers(self):
+        from orchestrator import _strip_markdown
+        self.assertEqual(_strip_markdown("## Heading `code`"), "Heading code")
+
+    def test_normalizes_whitespace(self):
+        from orchestrator import _strip_markdown
+        self.assertEqual(_strip_markdown("  too   many   spaces  "), "too many spaces")
+
+    def test_empty_string(self):
+        from orchestrator import _strip_markdown
+        self.assertEqual(_strip_markdown(""), "")
+
+    def test_plain_text_unchanged(self):
+        from orchestrator import _strip_markdown
+        self.assertEqual(_strip_markdown("no formatting here"), "no formatting here")
+
+
+class TestStripReasonPrefix(unittest.TestCase):
+    def test_strips_reasoning_prefix(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix("Reasoning: the feature is solid"), "the feature is solid")
+
+    def test_strips_why_prefix(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix("Why: not needed"), "not needed")
+
+    def test_strips_reason_prefix(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix("Reason: duplicate"), "duplicate")
+
+    def test_strips_analysis_prefix(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix("Analysis: looks good"), "looks good")
+
+    def test_no_prefix_unchanged(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix("the feature is solid"), "the feature is solid")
+
+    def test_empty_string(self):
+        from orchestrator import _strip_reason_prefix
+        self.assertEqual(_strip_reason_prefix(""), "")
+
+
+class TestFirstLineTruncated(unittest.TestCase):
+    def test_short_text_unchanged(self):
+        from orchestrator import _first_line_truncated
+        self.assertEqual(_first_line_truncated("short text"), "short text")
+
+    def test_truncates_at_word_boundary(self):
+        from orchestrator import _first_line_truncated
+        long_text = "word " * 40  # 200 chars
+        result = _first_line_truncated(long_text, limit=50)
+        self.assertTrue(result.endswith("..."))
+        self.assertLessEqual(len(result), 53)  # limit + "..."
+
+    def test_multiline_takes_first_line(self):
+        from orchestrator import _first_line_truncated
+        self.assertEqual(_first_line_truncated("first line\nsecond line"), "first line")
+
+    def test_empty_string(self):
+        from orchestrator import _first_line_truncated
+        self.assertEqual(_first_line_truncated(""), "")
+
+    def test_exact_limit(self):
+        from orchestrator import _first_line_truncated
+        text = "a" * 150
+        self.assertEqual(_first_line_truncated(text, limit=150), text)
+
+
 if __name__ == "__main__":
     unittest.main()
