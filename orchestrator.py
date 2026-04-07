@@ -1567,17 +1567,55 @@ class StationManager:
         # Always abort the trial merge (even if clean) to restore working state
         self._git("merge", "--abort", cwd=repo)
         if rc != 0:
-            activity(f"CONFLICT [{train.train_id}] — branch {branch} conflicts with {config.TRUNK_BRANCH}, re-queuing")
+            # Track conflict retries to prevent infinite loops
+            conflict_count = 0
+            spec_title = ""
+            if train.spec_path:
+                ip_path = train.spec_path + ".in_progress"
+                spec_read_path = ip_path if os.path.exists(ip_path) else train.spec_path
+                try:
+                    with open(spec_read_path) as f:
+                        spec_data = json.load(f)
+                    conflict_count = spec_data.get("conflict_count", 0) + 1
+                    spec_title = spec_data.get("title", "unknown")
+                except (OSError, json.JSONDecodeError):
+                    conflict_count = 1
+
             self._remove_worktree(train.repo_dir, train.working_dir)
             if self._git_has_branch(branch, cwd=repo):
                 self._git("branch", "-D", branch, cwd=repo)
-            if train.spec_path:
-                ip_path = train.spec_path + ".in_progress"
-                if os.path.exists(ip_path):
-                    os.rename(ip_path, train.spec_path)
             feedback_path = self._feedback_path(branch)
             if os.path.exists(feedback_path):
                 os.remove(feedback_path)
+
+            # Reject after max retries, otherwise re-queue with incremented count
+            if conflict_count > config.MAX_CONFLICT_RETRIES:
+                activity(f"REJECTED [{train.train_id}] spec '{spec_title}' after {config.MAX_CONFLICT_RETRIES} conflict retries")
+                record_rejection(spec_title, f"persistent merge conflict with {config.TRUNK_BRANCH} after {config.MAX_CONFLICT_RETRIES} attempts")
+                if train.spec_path:
+                    ip_path = train.spec_path + ".in_progress"
+                    if os.path.exists(ip_path):
+                        os.remove(ip_path)
+                    if os.path.exists(train.spec_path):
+                        os.remove(train.spec_path)
+            else:
+                activity(f"CONFLICT [{train.train_id}] — branch {branch} conflicts with {config.TRUNK_BRANCH}, re-queuing (attempt {conflict_count}/{config.MAX_CONFLICT_RETRIES})")
+                if train.spec_path:
+                    ip_path = train.spec_path + ".in_progress"
+                    spec_read_path = ip_path if os.path.exists(ip_path) else train.spec_path
+                    try:
+                        with open(spec_read_path) as f:
+                            spec_data = json.load(f)
+                        spec_data["conflict_count"] = conflict_count
+                        with open(train.spec_path, "w") as f:
+                            json.dump(spec_data, f, indent=2)
+                        if os.path.exists(ip_path) and ip_path != train.spec_path:
+                            os.remove(ip_path)
+                    except (OSError, json.JSONDecodeError):
+                        # Fall back to simple rename if JSON operations fail
+                        if os.path.exists(ip_path):
+                            os.rename(ip_path, train.spec_path)
+
             train.reset_pipeline()
             return
 
