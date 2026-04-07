@@ -2295,6 +2295,7 @@ class StationManager:
 
 if __name__ == "__main__":
     import argparse
+    import atexit
 
     parser = argparse.ArgumentParser(description="Yamanote — multi-agent orchestrator")
     parser.add_argument("--dashboard", action="store_true",
@@ -2302,6 +2303,29 @@ if __name__ == "__main__":
     parser.add_argument("--dashboard-port", type=int, default=0, metavar="PORT",
                         help="Enable web dashboard on a specific port")
     args = parser.parse_args()
+
+    # Check for existing instance via PID file
+    if os.path.exists(config.PID_FILE):
+        try:
+            with open(config.PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            # Check if process is still running
+            try:
+                os.kill(old_pid, 0)  # Signal 0 just checks if process exists
+                log.error("Orchestrator already running (PID %d). Exiting.", old_pid)
+                sys.exit(1)
+            except OSError:
+                # Process doesn't exist, stale PID file
+                log.warning("Removing stale PID file (process %d no longer exists)", old_pid)
+                os.remove(config.PID_FILE)
+        except (ValueError, OSError):
+            # Malformed or unreadable PID file, remove it
+            os.remove(config.PID_FILE)
+
+    # Write our PID and ensure cleanup on exit
+    with open(config.PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(lambda: os.path.exists(config.PID_FILE) and os.remove(config.PID_FILE))
 
     # Priority: --dashboard-port > --dashboard (8080) > env var > disabled
     dash_port = args.dashboard_port or (8080 if args.dashboard else config.DASHBOARD_PORT)

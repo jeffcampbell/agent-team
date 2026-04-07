@@ -105,6 +105,7 @@ MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeo
 MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 PAUSE_FILE = os.path.join(BASE_DIR, "agents", "pause")  # touch to pause, rm to resume
+PID_FILE = os.path.join(BASE_DIR, "agents", "orchestrator.pid")  # prevent multiple instances
 SERVICE_RESTART_TIMEOUT = 300      # seconds before service restart is killed
 
 # ─── SLA Thresholds ─────────────────────────────────────────────────────────
