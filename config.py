@@ -89,6 +89,8 @@ RAILWAY_LOG_TIMEOUT = 8  # seconds to capture streaming railway logs
 
 # ─── Git ─────────────────────────────────────────────────────────────────────
 
+GIT_TIMEOUT = 30  # seconds before a git subprocess is killed
+
 TRUNK_BRANCH = "main"  # default branch for target projects
 APP_LOG_GLOB = os.environ.get("AGENT_TEAM_APP_LOG_GLOB", "")  # e.g. "logs/*.log" or "app.log"
 MAX_ENG_EDITS_BEFORE_RESET = 5
@@ -105,9 +107,23 @@ MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this ma
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
 MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
+INSPECTOR_DIFF_MAX_CHARS = 20000   # max diff characters passed to Inspector prompt
+LOG_MAX_SIZE_BYTES = 5 * 1024 * 1024  # rotate activity.log when it exceeds this size (5MB)
+LOG_RETENTION_DAYS = 7             # prune agent log files older than this many days
 PAUSE_FILE = os.path.join(BASE_DIR, "agents", "pause")  # touch to pause, rm to resume
 PID_FILE = os.path.join(BASE_DIR, "agents", "orchestrator.pid")  # prevent multiple instances
 SERVICE_RESTART_TIMEOUT = 300      # seconds before service restart is killed
+
+# Stall detection: pause a project's dispatcher after this many consecutive triage rejections
+# with no successful merges. Clears automatically after STALL_PAUSE_SECONDS.
+MAX_CONSECUTIVE_REJECTIONS = 5
+STALL_PAUSE_SECONDS = 86400        # 24 hours
+
+# Drafts recycler: move HOLD specs back to backlog after this much time has passed
+DRAFTS_RECYCLE_AGE_SECONDS = 86400   # 24 hours
+
+# Worktree GC: scan for and remove orphaned worktrees this often
+WORKTREE_GC_INTERVAL = 3600          # 1 hour
 
 # ─── SLA Thresholds ─────────────────────────────────────────────────────────
 SPEC_SLA_SECONDS = 1800             # 30 min wall-clock limit for a spec across all phases
@@ -155,19 +171,25 @@ The project you are managing is located at: {working_dir}
 Context — recent application logs:
 {app_logs}
 
-Use these logs to inform your decision. Look for:
-- Gaps in functionality — what could the app do that it doesn't yet?
-- Recurring errors or friction points users hit
+Context — recently rejected specs (do NOT propose these again):
+{rejected_specs}
 
-IMPORTANT: Prefer proposing new features and capabilities over refactoring,
-cleanup, or incremental polish of existing functionality. Bias towards what would make
-users say "oh cool, it can do THAT now?" rather than small quality-of-life tweaks.
-This is not an absolute rule. If the product seems feature complete, start working on polish.
+Context — recent work balance:
+{work_balance_digest}
+
+Use the balance signal to inform — but not override — your judgment. \
+Pick the spec that is genuinely most valuable to the product right now. \
+If the balance signal says FEATURE-HEAVY, lean toward a bug fix or hardening spec \
+only if a real problem exists. Do not manufacture tasks to hit a type quota. \
 If no logs are available, base your decision on the codebase alone.
+
+Do NOT propose specs that were recently rejected. Check the rejected specs list above and \
+avoid generating similar ideas unless circumstances have clearly changed (e.g., dependencies \
+were added, blocker was resolved).
 
 Instructions:
 1. Review the codebase at {working_dir} and any existing backlog items in {backlog_dir}.
-2. Identify the most impactful change to build next.
+2. Identify the most impactful change to build next, informed by the balance signal above.
 3. Write a JSON spec file to {backlog_dir}/ with this exact format:
    {{
      "title": "short-kebab-title",
@@ -280,12 +302,26 @@ INSPECTOR_PROMPT = """\
 You are the Inspector agent. Review code changes and approve or request fixes.
 
 Project: {working_dir} | Branch: {branch_name}
+
+Spec under review:
+{spec_json}
+
 Diff against main:
 {diff}
 
-Evaluate for: (1) correctness & error handling, (2) security, (3) spec completeness.
+Evaluate for:
+(1) Correctness & error handling — are errors on service/DB/API calls handled?
+(2) Security — no injections, no secrets in code, no unsafe subprocess usage.
+(3) Spec completeness — does the diff implement everything in the spec's description \
+    and acceptance criteria? If the spec says X must work, verify the diff delivers X.
+(4) Behavioral completeness — for new user-facing behavior: is there at least one \
+    regression test covering the core path? A single test is enough — do NOT request \
+    a full test suite. Only require this if the spec introduces new logic with no \
+    existing test coverage at all.
+
 Only block on real issues — each CHANGES_REQUESTED costs a full conductor round-trip.
-Do NOT block on style, comments, or speculative concerns.
+Do NOT block on style, comments, naming, or speculative concerns.
+Do NOT request additional tests beyond criterion (4).
 
 Write feedback to: {feedback_path}
 First line MUST be either "APPROVED" or "CHANGES_REQUESTED".

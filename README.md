@@ -2,7 +2,7 @@
 
 ![Yamanote](img/yamanote_banner.png)
 
-A multi-agent orchestrator that coordinates six Claude Code agent personas — **Dispatcher**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
+A multi-agent orchestrator that coordinates Claude Code agent personas — **Dispatcher**, **Triage**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
 
 Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd service.
 
@@ -11,7 +11,7 @@ Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd se
 The orchestrator runs a tick loop (every 10 seconds by default) that evaluates phases in order:
 
 ```
-service_recovery  →  rework  →  dispatcher  →  conductor  →  inspector  →  signal  →  entropy_check  →  station_manager_check
+service_recovery → rework → dispatcher → triage → conductor → inspector → signal → entropy_check → station_manager_check
 ```
 
 Each phase decides whether to launch its agent based on the current state of the pipeline. Only one instance of each agent runs at a time.
@@ -21,8 +21,9 @@ Each phase decides whether to launch its agent based on the current state of the
 | Agent | Model | Role |
 |---|---|---|
 | **Dispatcher** | Sonnet | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
+| **Triage** | Sonnet | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
 | **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
-| **Inspector** | Sonnet | Reviews diffs against `main`. Merges acceptable work or requests changes |
+| **Inspector** | Sonnet | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
 | **Signal** | Sonnet | Monitors application logs for errors and files bug tickets into the backlog |
 | **Station Manager** | Sonnet | Resets branches when Conductor gets stuck in edit loops |
 | **Operations** | Sonnet | Analyzes orchestrator activity and implements small operational improvements |
@@ -32,31 +33,37 @@ Each phase decides whether to launch its agent based on the current state of the
 ```
 Dispatcher creates spec
        ↓
+Triage gate (BUILD / REJECT / HOLD)
+       ↓
 Conductor implements on feature branch
        ↓
-Inspector reviews diff
+Inspector reviews diff + verifies acceptance criteria
       ↙         ↘
-  MERGED     CHANGES_REQUESTED
+  APPROVED   CHANGES_REQUESTED
      ↓              ↓
- Service restart   Conductor rework (up to 3 attempts)
-                     ↓
-                 Re-review
+ Merge to main   Conductor rework (up to 3 attempts)
+     ↓                ↓
+Service restart    Re-review
 ```
+
+REJECTED specs are logged to `agents/rejected_specs.txt`. HOLD specs move to `agents/drafts/` and are automatically recycled back to the backlog after 24 hours for re-evaluation.
 
 ### Directory structure
 
 ```
-agent-team/
+yamanote/
 ├── orchestrator.py       # Main orchestration loop
 ├── config.py             # All configuration and agent prompts
-├── dashboard.py          # Optional web dashboard server
+├── metrics.py            # Prometheus-compatible metrics registry (stdlib-only)
+├── dashboard.py          # Optional web dashboard + /metrics endpoint
 ├── dashboard.html        # Dashboard UI (single-page, dark theme)
 ├── SETUP.md              # AI-agent-friendly setup instructions
 ├── agent-team.service    # systemd unit file
+├── start.sh              # Wrapper that auto-restarts on exit
 ├── .env.example          # Template for environment variables
-├── .gitignore
 └── agents/               # Runtime data (gitignored)
     ├── backlog/          # JSON spec files (features and bugs)
+    ├── drafts/           # HOLD specs awaiting re-evaluation
     ├── review/           # Inspector feedback files
     ├── logs/             # Stdout/stderr from each agent run
     └── activity.log      # Human-readable event log
@@ -77,7 +84,7 @@ agent-team/
 
 ```bash
 git clone https://github.com/jeffcampbell/yamanote.git
-cd agent-team
+cd yamanote
 ```
 
 ### 2. Configure your target project
@@ -99,7 +106,6 @@ AGENT_TEAM_DEFAULT_PROJECT=my-app
 
 # Command to restart your app after a merge (leave empty to skip)
 AGENT_TEAM_SERVICE_RESTART_CMD=sudo systemctl restart my-app.service
-
 ```
 
 ### 3. Run manually
@@ -107,10 +113,16 @@ AGENT_TEAM_SERVICE_RESTART_CMD=sudo systemctl restart my-app.service
 Load the environment and start the orchestrator:
 
 ```bash
+./start.sh
+```
+
+Or directly:
+
+```bash
 source .env && python3 orchestrator.py
 ```
 
-The orchestrator creates `agents/backlog/`, `agents/review/`, and `agents/logs/` on first run. Press `Ctrl+C` to gracefully shut down all agents.
+The orchestrator creates `agents/backlog/`, `agents/review/`, `agents/drafts/`, and `agents/logs/` on first run. Press `Ctrl+C` to gracefully shut down all agents.
 
 ### 4. Run as a systemd service
 
@@ -125,15 +137,15 @@ sudo systemctl start agent-team
 
 The unit file includes an `EnvironmentFile` directive that loads your `.env` automatically. Edit the `[Service]` section paths to match your setup:
 
-- `WorkingDirectory` — path to the cloned `agent-team` repo
-- `ExecStart` — path to `orchestrator.py`
+- `WorkingDirectory` — path to the cloned repo
+- `ExecStart` — path to `start.sh` in this repo
 - `EnvironmentFile` — path to your `.env` file
 - `User` — the user to run as
 
 If your `AGENT_TEAM_SERVICE_RESTART_CMD` uses `sudo`, ensure the service user has passwordless sudo for that command:
 
 ```bash
-# /etc/sudoers.d/agent-team
+# /etc/sudoers.d/yamanote
 <your-user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart your-app.service
 ```
 
@@ -184,6 +196,31 @@ The dashboard shows:
 
 A JSON API is also available at `GET /api/status` for programmatic access.
 
+#### Prometheus metrics
+
+When the dashboard is enabled, a Prometheus-compatible `/metrics` endpoint is served at the same port:
+
+```
+GET http://<host>:<port>/metrics
+```
+
+Metrics exposed:
+
+| Metric | Type | Description |
+|---|---|---|
+| `yamanote_specs_total` | Counter | Specs processed, labelled by outcome (`merged`, `rejected`, `conflict`, `entropy`, `sla_breach`) |
+| `yamanote_agent_launches_total` | Counter | Agent subprocess launches, labelled by agent name |
+| `yamanote_agent_failures_total` | Counter | Non-zero agent exits, labelled by agent name |
+| `yamanote_log_errors_detected_total` | Counter | ERROR/WARNING lines detected by the log watcher |
+| `yamanote_signal_triggers_total` | Counter | Times Signal was triggered reactively by the log watcher |
+| `yamanote_backlog_size` | Gauge | Current number of specs in the backlog |
+| `yamanote_trains_active` | Gauge | Number of trains currently assigned to a spec |
+| `yamanote_launches_last_hour` | Gauge | Agent launches in the past 60 minutes |
+| `yamanote_sleep_mode_active` | Gauge | `1` if rate-limit sleep mode is active |
+| `yamanote_uptime_seconds` | Gauge | Seconds since the orchestrator started |
+
+Point Prometheus at `http://<host>:<port>/metrics` and connect Grafana for dashboards.
+
 ## Customizing for your project
 
 Yamanote is a general-purpose orchestrator. All project-specific context comes from configuration and files in your target project — the agent prompts are intentionally generic.
@@ -217,7 +254,7 @@ Yamanote is a general-purpose orchestrator. All project-specific context comes f
   ```bash
   AGENT_TEAM_APP_LOG_GLOB="logs/*.log"
   ```
-- **Set `AGENT_TEAM_DASHBOARD_PORT`** to enable the web dashboard:
+- **Set `AGENT_TEAM_DASHBOARD_PORT`** to enable the web dashboard and `/metrics` endpoint:
   ```bash
   AGENT_TEAM_DASHBOARD_PORT=8080
   ```
@@ -249,8 +286,15 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TEAM_DEV_DIR` | `~/Development` | Parent directory containing your project(s) |
 | `AGENT_TEAM_DEFAULT_PROJECT` | *(none — required)* | Project directory name under `AGENT_TEAM_DEV_DIR` |
 | `AGENT_TEAM_SERVICE_RESTART_CMD` | *(empty — skip restart)* | Shell command to restart your app after a merge |
-| `AGENT_TEAM_DASHBOARD_PORT` | `0` *(disabled)* | Port for the web dashboard (`0` = off) |
+| `AGENT_TEAM_DASHBOARD_PORT` | `0` *(disabled)* | Port for the web dashboard and `/metrics` endpoint (`0` = off) |
 | `AGENT_TEAM_APP_LOG_GLOB` | *(auto-discover)* | Glob pattern for the project's log file (e.g. `logs/*.log`) |
+| `AGENT_TEAM_RAILWAY_PROJECT` | *(empty)* | Railway project name for post-merge deploys |
+| `AGENT_TEAM_RAILWAY_SERVICE` | *(empty)* | Railway service name |
+| `AGENT_TEAM_RAILWAY_STAGING_ENV` | `staging` | Railway environment for staging deploys |
+| `AGENT_TEAM_RAILWAY_PRODUCTION_ENV` | `production` | Railway environment for production deploys |
+| `AGENT_TEAM_REGULAR_TRAINS` | `0` | Number of high-complexity parallel pipelines |
+| `AGENT_TEAM_STANDARD_TRAINS` | `1` | Number of medium-complexity parallel pipelines |
+| `AGENT_TEAM_EXPRESS_TRAINS` | `0` | Number of low-complexity parallel pipelines |
 
 ### Timing
 
@@ -260,41 +304,13 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TIMEOUT_SECONDS` | 1200s (20 min) | Max runtime per agent subprocess before termination |
 | `SLEEP_MODE_DURATION` | 3600s (1 hr) | How long to sleep when fare limit triggers |
 
-### Agent models
+### SLA thresholds
 
 | Setting | Default | Description |
 |---|---|---|
-| `AGENT_MODELS` | See below | Claude model ID per agent |
-
-```python
-AGENT_MODELS = {
-    "dispatcher":      "claude-sonnet-4-5-20250929",
-    "conductor":       "claude-sonnet-4-5-20250929",
-    "inspector":       "claude-sonnet-4-5-20250929",
-    "signal":          "claude-sonnet-4-5-20250929",
-    "station_manager": "claude-sonnet-4-5-20250929",
-    "ops":             "claude-sonnet-4-5-20250929",
-}
-```
-
-All agents use Sonnet for a good balance of capability and cost.
-
-### Agent throttling
-
-| Setting | Default | Description |
-|---|---|---|
-| `AGENT_MIN_INTERVALS` | See below | Minimum seconds between consecutive launches of each agent |
-
-```python
-AGENT_MIN_INTERVALS = {
-    "dispatcher":      1800,   # 30 minutes
-    "conductor":       0,      # on-demand (spec-driven)
-    "inspector":       0,      # on-demand (eng completion-driven)
-    "signal":          0,      # on-demand (triggered by log watcher, not polling)
-    "station_manager": 0,      # on-demand
-    "ops":             3600,   # 1 hour
-}
-```
+| `SPEC_SLA_SECONDS` | 1800s (30 min) | Wall-clock limit for a spec across all phases |
+| `CHECKPOINT_SLA_SECONDS` | 120s (2 min) | Max idle time at a pipeline checkpoint before intervention |
+| `IDLE_SLA_SECONDS` | 14400s (4 hr) | All-idle time before the dispatcher is force-triggered |
 
 ### Guardrails
 
@@ -307,6 +323,11 @@ AGENT_MIN_INTERVALS = {
 | `MAX_ENG_EDITS_BEFORE_RESET` | 5 | File edit cycles before Station Manager resets the branch |
 | `MAX_REWORK_ATTEMPTS` | 3 | Inspector change requests before the spec is abandoned |
 | `MAX_SPEC_TIMEOUTS` | 2 | Conductor timeouts on a spec before it is dropped |
+| `MAX_CONFLICT_RETRIES` | 3 | Merge conflict retries before a spec is permanently rejected |
+| `MAX_CONSECUTIVE_REJECTIONS` | 5 | Consecutive triage rejections before a project's dispatcher is paused |
+| `STALL_PAUSE_SECONDS` | 86400s (24 hr) | How long to pause a stalled project's dispatcher |
+| `DRAFTS_RECYCLE_AGE_SECONDS` | 86400s (24 hr) | Age before a HOLD spec is moved back to backlog |
+| `WORKTREE_GC_INTERVAL` | 3600s (1 hr) | How often to scan for and remove orphaned git worktrees |
 | `SELF_PROJECT_DIR` | `BASE_DIR` | Prevents agents from modifying the orchestrator itself |
 
 ### Git
@@ -314,23 +335,46 @@ AGENT_MIN_INTERVALS = {
 | Setting | Default | Description |
 |---|---|---|
 | `TRUNK_BRANCH` | `main` | Branch that Conductor branches from and Inspector merges to |
+| `GIT_TIMEOUT` | 30s | Timeout for git subprocesses |
 
-## How the Dispatcher uses app logs
+## How the Dispatcher makes decisions
 
-The Dispatcher agent receives the last 100 lines of the target project's log file (if one exists). Log files are discovered automatically:
+The Dispatcher receives several pieces of context before proposing a spec:
 
+1. **App logs** — last 100 lines of the project's log file, for identifying errors and usage patterns
+2. **Rejected specs** — the last 20 rejections over 30 days, to avoid re-proposing ideas that failed triage
+3. **Work balance digest** — a summary of recent merged spec types (feature / bugfix / hardening / refactor) with a balance signal (e.g. `FEATURE-HEAVY`). The Dispatcher uses this as a soft signal — not a quota — to avoid overindexing on one type of work
+
+Log files are discovered automatically:
 1. `AGENT_TEAM_APP_LOG_GLOB` env var (if set)
 2. `logs/*.log` in the project directory
 3. `*.log` in the project root
 
-When multiple files match, the most recently modified one is used. The Dispatcher uses this data to:
+When multiple files match, the most recently modified one is used.
 
-- Identify which features are used most frequently
-- Check whether recently shipped features are seeing adoption
-- Spot recurring errors or user friction points
-- Prioritize refinements to popular features
+## Extensible log sources
 
-When no log file is found, the Dispatcher falls back to codebase-only analysis.
+The log watcher supports pluggable backends via the `LogSource` ABC. Two are built in:
+
+- **`FileLogSource`** — watches the project's local log file using byte offsets
+- **`RailwayLogSource`** — streams logs from Railway deployments via the `railway` CLI
+
+To add a custom backend (CloudWatch, k8s, Datadog, etc.):
+
+```python
+from orchestrator import LogSource
+
+class MySource(LogSource):
+    @property
+    def name(self) -> str:
+        return "my-source"
+
+    def fetch_new_lines(self, project_dir: str) -> list[str]:
+        # return new log lines since last call
+        return []
+
+station_manager.register_log_source(MySource())
+```
 
 ## Safety features
 
@@ -341,8 +385,12 @@ When no log file is found, the Dispatcher falls back to codebase-only analysis.
 - **Timeout enforcement** — agents are terminated after 20 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts
 - **Orphan recovery** — on startup, any `.in_progress` specs from a previous crash are restored to the backlog
 - **Working directory validation** — specs must target a directory under `DEVELOPMENT_DIR`
-- **Merge conflict detection** — before launching Inspector, the orchestrator performs a dry-run merge. If the branch conflicts with main, it is deleted and the spec re-queued for a fresh attempt
+- **Merge conflict detection** — before launching Inspector, the orchestrator performs a dry-run merge. If the branch conflicts with main, it is deleted and the spec re-queued (up to 3 attempts, then permanently rejected)
 - **Service restart timeout** — service restart commands are killed after 5 minutes to prevent the orchestrator from hanging
+- **Stall circuit breaker** — after 5 consecutive triage rejections with no successful merges, a project's dispatcher is paused for 24 hours to prevent infinite reject loops. Clears automatically when a spec merges
+- **Drafts recycler** — HOLD specs older than 24 hours are automatically moved back to the backlog for re-evaluation by triage
+- **Worktree GC** — orphaned `.worktrees/` directories (from crashes or config changes) are removed hourly to prevent git slowdown and disk accumulation
+- **Spec rename race protection** — the atomic `.in_progress` rename is protected against filesystem errors; a failed claim resets the pipeline cleanly rather than corrupting state
 
 ## Manual controls
 
@@ -375,6 +423,7 @@ When the dashboard is enabled, POST endpoints provide runtime control:
 | `POST /api/skip/<filename>` | Skip a backlog spec |
 | `POST /api/unskip/<filename>` | Unskip a backlog spec |
 | `POST /api/retry/<agent_name>` | Clear cooldown and retry an agent immediately |
+| `GET /metrics` | Prometheus metrics (when dashboard is enabled) |
 
 ## License
 

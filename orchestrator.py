@@ -6,13 +6,17 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from abc import ABC, abstractmethod
 from collections import deque
 
 import config
+from metrics import METRICS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,8 +36,8 @@ def activity(msg: str):
     try:
         with open(config.ACTIVITY_LOG, "a") as f:
             f.write(line)
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"[yamanote] activity log write failed: {e}", file=sys.stderr)
 
 
 def _strip_markdown(text: str) -> str:
@@ -135,6 +139,21 @@ def read_failure_log(max_lines: int = 15) -> str:
         return "(none)"
 
 
+def _classify_spec_type(title: str) -> str:
+    """Classify a spec title as feature/bugfix/hardening/refactor by keyword heuristic."""
+    t = title.lower()
+    if any(w in t for w in ("bug", "fix", "error", "crash", "fail", "broken", "patch", "hotfix")):
+        return "bugfix"
+    if any(w in t for w in ("test", "coverage", "assert", "unit-test", "integration")):
+        return "hardening"
+    if any(w in t for w in ("refactor", "cleanup", "reorganize", "restructure", "rename",
+                             "simplify", "dedup", "remove-dead", "dead-code")):
+        return "refactor"
+    if any(w in t for w in ("monitor", "metric", "observ", "alert", "trace", "instrument")):
+        return "hardening"
+    return "feature"
+
+
 # ─── Project scheduling ──────────────────────────────────────────────────────
 
 def _is_in_schedule_window(schedule: str | None, now_hour: int | None = None) -> bool:
@@ -156,6 +175,170 @@ def _is_in_schedule_window(schedule: str | None, now_hour: int | None = None) ->
         return start_h <= now_hour <= end_h
     else:
         return now_hour >= start_h or now_hour <= end_h
+
+
+# ─── Module-level log helpers (extracted from StationManager for reuse) ──────
+
+def find_app_log(project_dir: str) -> str | None:
+    """Resolve the project's application log file.
+
+    Priority: AGENT_TEAM_APP_LOG_GLOB env var → common log file names.
+    Returns the most-recently-modified match, or None.
+    """
+    patterns = []
+    if config.APP_LOG_GLOB:
+        patterns.append(config.APP_LOG_GLOB)
+    patterns += ["logs/*.log", "*.log"]
+    for pattern in patterns:
+        matches = sorted(
+            glob.glob(os.path.join(project_dir, pattern)),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )
+        if matches:
+            return matches[0]
+    return None
+
+
+def fetch_railway_logs(environment: str, project_dir: str) -> str:
+    """Fetch recent logs from Railway via CLI. Streams for RAILWAY_LOG_TIMEOUT seconds."""
+    cmd = [
+        "railway", "logs",
+        "-e", environment,
+        "-s", config.RAILWAY_SERVICE,
+    ]
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=project_dir,
+            start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=config.RAILWAY_LOG_TIMEOUT)
+        return stdout
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, 9)
+        stdout, _ = proc.communicate()
+        return stdout
+    except (OSError, FileNotFoundError) as e:
+        log.warning("Railway CLI failed: %s", e)
+        return ""
+
+
+# ─── Pluggable log sources ────────────────────────────────────────────────────
+
+class LogSource(ABC):
+    """Abstract base for pluggable log sources used by the error watcher.
+
+    Implement this to add new log backends (k8s, CloudWatch, Datadog, etc.)
+    without modifying the orchestrator core. Register via
+    StationManager.register_log_source().
+
+    Each source tracks its own read position so independent callers (watcher
+    vs. Signal) never interfere with each other's offsets.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Unique identifier shown in log messages."""
+        ...
+
+    @abstractmethod
+    def read_new_lines(self, project_dir: str) -> list[str]:
+        """Return log lines written since the last call for this project_dir.
+
+        On the very first call for a given project_dir, implementations should
+        record the current position and return [] (don't scan old history).
+        """
+        ...
+
+
+class FileLogSource(LogSource):
+    """Read new lines from a local log file, using byte-offset tracking."""
+
+    @property
+    def name(self) -> str:
+        return "file"
+
+    def __init__(self):
+        self._offsets: dict[str, int] = {}
+
+    def read_new_lines(self, project_dir: str) -> list[str]:
+        log_path = find_app_log(project_dir)
+        if not log_path:
+            return []
+
+        if project_dir not in self._offsets:
+            try:
+                self._offsets[project_dir] = os.path.getsize(log_path)
+            except OSError:
+                pass
+            return []
+
+        stored = self._offsets[project_dir]
+        try:
+            size = os.path.getsize(log_path)
+        except OSError:
+            return []
+
+        if size < stored:  # log rotation
+            stored = 0
+        if size == stored:
+            return []
+
+        try:
+            with open(log_path, "r", errors="replace") as f:
+                f.seek(stored)
+                new_text = f.read()
+            self._offsets[project_dir] = size
+            return new_text.splitlines()
+        except OSError:
+            return []
+
+
+class RailwayLogSource(LogSource):
+    """Read new lines from Railway via CLI, throttled to once per minute."""
+
+    _POLL_INTERVAL = 60  # seconds between Railway CLI invocations
+
+    @property
+    def name(self) -> str:
+        return "railway"
+
+    def __init__(self):
+        self._last_seen: dict[str, str | None] = {}
+        self._last_poll: float = 0.0
+
+    def read_new_lines(self, project_dir: str) -> list[str]:
+        if not config.RAILWAY_PROJECT:
+            return []
+        now = time.time()
+        if now - self._last_poll < self._POLL_INTERVAL:
+            return []
+        self._last_poll = now
+
+        output = fetch_railway_logs(config.RAILWAY_PRODUCTION_ENV, project_dir)
+        if not output:
+            return []
+
+        lines = output.splitlines()
+        if not lines:
+            return []
+
+        if project_dir not in self._last_seen:
+            self._last_seen[project_dir] = lines[-1]
+            return []
+
+        last_seen = self._last_seen[project_dir]
+        try:
+            idx = lines.index(last_seen) if last_seen else -1
+            new_lines = lines[idx + 1:]
+        except ValueError:
+            new_lines = lines
+
+        if new_lines:
+            self._last_seen[project_dir] = new_lines[-1]
+        return new_lines
 
 
 # Pattern: match lines containing ERROR/WARNING/CRITICAL/FATAL (case-insensitive)
@@ -194,6 +377,7 @@ class AgentProcess:
             text=True,
             env=env,
             cwd=self.cwd,
+            start_new_session=True,  # own process group so timeout kills the whole tree
         )
         self.start_time = time.time()
         log.info("Agent %s started with PID %d", self.name, self.proc.pid)
@@ -362,8 +546,11 @@ class StationManager:
         self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
         self.last_merge_time: float = 0.0  # timestamp of last merge (to skip Signal during deployment)
 
-        # Log watcher: independent byte offsets (don't interfere with Signal's offsets)
-        self.watcher_log_offsets: dict[str, int] = {}
+        # Log watcher: pluggable sources + dedup state
+        # watcher_log_offsets have moved into FileLogSource._offsets
+        self._log_sources: list[LogSource] = [FileLogSource()]
+        if config.RAILWAY_PROJECT:
+            self._log_sources.append(RailwayLogSource())
         # Dedup: error signature → timestamp when we last filed a spec for it
         self.watcher_recent_specs: dict[str, float] = {}
 
@@ -380,6 +567,20 @@ class StationManager:
 
         # SLA: track when all trains went idle
         self.all_idle_since: float = 0.0
+
+        # Stall detection: consecutive triage rejections per project, and stall resume times
+        self._project_rejection_counts: dict[str, int] = {}
+        self._stalled_projects: dict[str, float] = {}  # project → resume_time
+
+        # Drafts recycler: last time stale HOLD specs were moved back to backlog
+        self._last_draft_recycle: float = 0.0
+
+        # Worktree GC: projects that have had worktrees created, and last GC time
+        self._seen_project_dirs: set[str] = set()
+        self._last_worktree_gc: float = 0.0
+
+        # Log rotation: track last prune time to gate the expensive directory scan
+        self._last_log_prune: float = 0.0
 
         # Per-tick caches — reset each tick to avoid redundant filesystem I/O
         self._tick_id: int = 0
@@ -399,6 +600,18 @@ class StationManager:
         self._recover_orphaned_specs()
 
     # ─── Helpers ─────────────────────────────────────────────────────────
+
+    def register_log_source(self, source: LogSource) -> None:
+        """Register a custom log source for the error watcher.
+
+        Example — add a CloudWatch source::
+
+            sm.register_log_source(MyCloudWatchSource())
+
+        Sources are polled in registration order on every watcher tick.
+        """
+        self._log_sources.append(source)
+        log.info("Registered log source: %s", source.name)
 
     def _feedback_path(self, branch: str) -> str:
         """Return the path to an inspector feedback file for the given branch.
@@ -463,6 +676,47 @@ class StationManager:
 
             os.rename(path, original)
             activity(f"RECOVERED orphaned spec: {os.path.basename(original)}")
+
+    def _maybe_rotate_logs(self):
+        """Rotate activity.log if it exceeds the size threshold; prune old agent log files hourly."""
+        # Rotate activity.log: rename to .1, shift older rotations, keep at most 3
+        if os.path.exists(config.ACTIVITY_LOG):
+            try:
+                if os.path.getsize(config.ACTIVITY_LOG) > config.LOG_MAX_SIZE_BYTES:
+                    for i in range(2, 0, -1):
+                        src = f"{config.ACTIVITY_LOG}.{i}"
+                        dst = f"{config.ACTIVITY_LOG}.{i + 1}"
+                        if os.path.exists(src):
+                            try:
+                                os.rename(src, dst)
+                            except OSError:
+                                pass
+                    try:
+                        os.rename(config.ACTIVITY_LOG, f"{config.ACTIVITY_LOG}.1")
+                        log.info(
+                            "Rotated activity.log (exceeded %dMB)",
+                            config.LOG_MAX_SIZE_BYTES // (1024 * 1024),
+                        )
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
+        # Prune agent log files older than retention period (rate-limited to once per hour)
+        now = time.time()
+        if now - self._last_log_prune >= 3600:
+            self._last_log_prune = now
+            cutoff = now - (config.LOG_RETENTION_DAYS * 86400)
+            pruned = 0
+            for path in glob.glob(os.path.join(config.LOGS_DIR, "*.log")):
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                        pruned += 1
+                except OSError:
+                    pass
+            if pruned:
+                log.info("Pruned %d agent log files older than %d days", pruned, config.LOG_RETENTION_DAYS)
 
     def _backlog_specs(self, complexity: str | None = None) -> list[str]:
         """Return backlog specs sorted by priority (high first), then oldest first.
@@ -559,6 +813,7 @@ class StationManager:
             self.active_agents[name] = None
             # Set cooldown on non-zero exit with exponential backoff
             if rc != 0:
+                METRICS.agent_failures_total.inc({"agent": name})
                 # Detect API rate-limit responses and enter sleep mode to avoid
                 # hammering a quota wall with repeated retries (seen as "out of extra usage")
                 agent_output = agent.get_output() + agent.get_stderr()
@@ -594,11 +849,17 @@ class StationManager:
         elapsed = time.time() - (agent.start_time or 0)
         activity(f"OVERDUE [{name}] after {elapsed:.0f}s — terminating")
         if agent.proc and agent.proc.poll() is None:
-            agent.proc.terminate()
+            try:
+                os.killpg(agent.proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                agent.proc.terminate()
             try:
                 agent.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                agent.proc.kill()
+                try:
+                    os.killpg(agent.proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    agent.proc.kill()
                 agent.proc.wait()
         agent.save_log(marker="[OVERDUE]")
         self.active_agents[name] = None
@@ -651,7 +912,6 @@ class StationManager:
                 f"(limit {config.MAX_AGENT_LAUNCHES_PER_HOUR}). "
                 f"Entering SERVICE SUSPENDED until {time.ctime(self.sleep_until)}"
             )
-            self.launch_times.clear()
             return None  # type: ignore[return-value]
 
         model = config.AGENT_MODELS.get(name, "claude-sonnet-4-5-20250929")
@@ -659,26 +919,37 @@ class StationManager:
         agent.start()
         self.active_agents[name] = agent
         self.last_launch_times[name] = now
+        METRICS.agent_launches_total.inc({"agent": name})
         activity(f"DEPARTED [{name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
 
     def _git(self, *args: str, cwd: str | None = None) -> str:
         """Run a git command and return stdout."""
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True,
-            cwd=cwd or config.BASE_DIR,
-        )
-        return result.stdout.strip()
+        try:
+            result = subprocess.run(
+                ["git"] + list(args),
+                capture_output=True, text=True,
+                cwd=cwd or config.BASE_DIR,
+                timeout=config.GIT_TIMEOUT,
+            )
+            return result.stdout.strip()
+        except subprocess.TimeoutExpired:
+            log.warning("git %s timed out after %ds (cwd=%s)", " ".join(args), config.GIT_TIMEOUT, cwd)
+            return ""
 
     def _git_rc(self, *args: str, cwd: str | None = None) -> tuple[int, str, str]:
         """Run a git command and return (returncode, stdout, stderr)."""
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True,
-            cwd=cwd or config.BASE_DIR,
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        try:
+            result = subprocess.run(
+                ["git"] + list(args),
+                capture_output=True, text=True,
+                cwd=cwd or config.BASE_DIR,
+                timeout=config.GIT_TIMEOUT,
+            )
+            return result.returncode, result.stdout.strip(), result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            log.warning("git %s timed out after %ds (cwd=%s)", " ".join(args), config.GIT_TIMEOUT, cwd)
+            return 1, "", "timeout"
 
     def _create_worktree(self, repo_dir: str, branch: str, train_id: str) -> str:
         """Create a git worktree for the given branch and return its path.
@@ -708,7 +979,7 @@ class StationManager:
         if os.path.isdir(worktree_path):
             result = subprocess.run(
                 ["git", "worktree", "remove", "--force", worktree_path],
-                capture_output=True, text=True, cwd=repo_dir,
+                capture_output=True, text=True, cwd=repo_dir, timeout=config.GIT_TIMEOUT,
             )
             if result.returncode != 0 and os.path.isdir(worktree_path):
                 shutil.rmtree(worktree_path, ignore_errors=True)
@@ -725,6 +996,7 @@ class StationManager:
                 f"The branch may already be checked out in another worktree."
             )
 
+        self._seen_project_dirs.add(repo_dir)
         activity(f"WORKTREE created: {worktree_path} (branch={branch})")
         return worktree_path
 
@@ -735,7 +1007,7 @@ class StationManager:
         if os.path.isdir(worktree_path):
             result = subprocess.run(
                 ["git", "worktree", "remove", "--force", worktree_path],
-                capture_output=True, text=True, cwd=repo_dir,
+                capture_output=True, text=True, cwd=repo_dir, timeout=config.GIT_TIMEOUT,
             )
             if result.returncode != 0 and os.path.isdir(worktree_path):
                 # Directory exists but isn't registered with git — remove it directly
@@ -757,49 +1029,11 @@ class StationManager:
         return self._git("rev-parse", "HEAD", cwd=cwd)
 
     def _find_app_log(self, project_dir: str) -> str | None:
-        """Resolve the project's application log file.
-
-        Priority: AGENT_TEAM_APP_LOG_GLOB env var → common log file names.
-        Returns the most-recently-modified match, or None.
-        """
-        patterns = []
-        if config.APP_LOG_GLOB:
-            patterns.append(config.APP_LOG_GLOB)
-        # Fallback: common conventions
-        patterns += ["logs/*.log", "*.log"]
-        for pattern in patterns:
-            matches = sorted(
-                glob.glob(os.path.join(project_dir, pattern)),
-                key=lambda p: os.path.getmtime(p),
-                reverse=True,
-            )
-            if matches:
-                return matches[0]
-        return None
+        return find_app_log(project_dir)
 
     def _fetch_railway_logs(self, environment: str) -> str:
-        """Fetch recent logs from Railway via CLI. Streams for RAILWAY_LOG_TIMEOUT seconds."""
         project_dir = os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
-        cmd = [
-            "railway", "logs",
-            "-e", environment,
-            "-s", config.RAILWAY_SERVICE,
-        ]
-        try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                cwd=project_dir,
-                start_new_session=True,  # own process group so we can kill the tree
-            )
-            stdout, _ = proc.communicate(timeout=config.RAILWAY_LOG_TIMEOUT)
-            return stdout
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, 9)  # SIGKILL the entire process group
-            stdout, _ = proc.communicate()
-            return stdout
-        except (OSError, FileNotFoundError) as e:
-            log.warning("Railway CLI failed: %s", e)
-            return ""
+        return fetch_railway_logs(environment, project_dir)
 
     def _read_app_log_tail(self, project_dir: str, lines: int = 100) -> str:
         if config.RAILWAY_PROJECT:
@@ -901,6 +1135,125 @@ class StationManager:
         git_log = self._git("log", "--oneline", "-10", cwd=config.BASE_DIR)
         return activity_tail, git_log
 
+    def _gather_work_balance_digest(self, project_dir: str, window: int = 20) -> str:
+        """Summarize recent merged spec types from the activity log for the dispatcher."""
+        try:
+            with open(config.ACTIVITY_LOG) as f:
+                lines = f.readlines()
+        except (OSError, FileNotFoundError):
+            return "(no activity history)"
+
+        terminus_re = re.compile(r"TERMINUS.*branch feature/([^\s]+)\s+approved")
+        merged_titles = []
+        for line in lines:
+            if "TERMINUS" not in line:
+                continue
+            m = terminus_re.search(line)
+            if m:
+                merged_titles.append(m.group(1))
+
+        recent = merged_titles[-window:] if len(merged_titles) > window else merged_titles
+        if not recent:
+            return "(no merged specs in activity history)"
+
+        counts: dict[str, int] = {"feature": 0, "bugfix": 0, "hardening": 0, "refactor": 0}
+        for title in recent:
+            spec_type = _classify_spec_type(title)
+            counts[spec_type] = counts.get(spec_type, 0) + 1
+
+        total = len(recent)
+        summary = f"Recent merged work ({total} specs): " + ", ".join(
+            f"{v} {k}" for k, v in counts.items() if v > 0
+        ) + "."
+
+        feature_pct = counts["feature"] / total
+        hardening_pct = (counts["hardening"] + counts["bugfix"]) / total
+        refactor_pct = counts["refactor"] / total
+
+        if feature_pct >= 0.7:
+            signal = "FEATURE-HEAVY — consider a bug fix or hardening spec if the product has real issues to address."
+        elif hardening_pct >= 0.6:
+            signal = "HARDENING-HEAVY — consider a meaningful new feature."
+        elif refactor_pct >= 0.4:
+            signal = "REFACTOR-HEAVY — consider new user-facing functionality."
+        else:
+            signal = "BALANCED — choose based on what the product needs most right now."
+
+        return f"{summary}\nBalance signal: {signal}"
+
+    def _on_triage_rejection(self, train: Train) -> None:
+        """Increment the per-project consecutive rejection counter; trigger stall if limit hit."""
+        project = train.repo_dir or train.working_dir or ""
+        if not project:
+            return
+        count = self._project_rejection_counts.get(project, 0) + 1
+        self._project_rejection_counts[project] = count
+        if count >= config.MAX_CONSECUTIVE_REJECTIONS:
+            resume_at = time.time() + config.STALL_PAUSE_SECONDS
+            self._stalled_projects[project] = resume_at
+            self._project_rejection_counts[project] = 0
+            hours = config.STALL_PAUSE_SECONDS // 3600
+            activity(
+                f"STALLED [{os.path.basename(project)}] — {count} consecutive triage rejections, "
+                f"dispatcher paused for {hours}h"
+            )
+
+    def _recycle_stale_drafts(self) -> None:
+        """Move HOLD specs older than DRAFTS_RECYCLE_AGE_SECONDS back to backlog."""
+        now = time.time()
+        if now - self._last_draft_recycle < config.DRAFTS_RECYCLE_AGE_SECONDS:
+            return
+        self._last_draft_recycle = now
+        if not os.path.isdir(config.DRAFTS_DIR):
+            return
+        os.makedirs(config.BACKLOG_DIR, exist_ok=True)
+        for fname in os.listdir(config.DRAFTS_DIR):
+            if not fname.endswith(".json"):
+                continue
+            src = os.path.join(config.DRAFTS_DIR, fname)
+            try:
+                age = now - os.path.getmtime(src)
+            except OSError:
+                continue
+            if age < config.DRAFTS_RECYCLE_AGE_SECONDS:
+                continue
+            dest = os.path.join(config.BACKLOG_DIR, fname)
+            try:
+                shutil.move(src, dest)
+                activity(f"RECYCLED draft spec back to backlog: {fname}")
+            except OSError as e:
+                log.warning("Failed to recycle draft spec %s: %s", fname, e)
+
+    def _gc_orphaned_worktrees(self) -> None:
+        """Remove worktrees in known project dirs that no active train owns."""
+        now = time.time()
+        if now - self._last_worktree_gc < config.WORKTREE_GC_INTERVAL:
+            return
+        self._last_worktree_gc = now
+        active_paths = {
+            train.working_dir
+            for train in self.trains
+            if train.working_dir and train.branch
+        }
+        for project_dir in list(self._seen_project_dirs):
+            worktree_base = os.path.join(project_dir, ".worktrees")
+            if not os.path.isdir(worktree_base):
+                continue
+            try:
+                entries = os.listdir(worktree_base)
+            except OSError:
+                continue
+            for entry in entries:
+                wt_path = os.path.join(worktree_base, entry)
+                if not os.path.isdir(wt_path):
+                    continue
+                if wt_path in active_paths:
+                    continue
+                self._git("worktree", "remove", "--force", wt_path, cwd=project_dir)
+                if os.path.isdir(wt_path):
+                    shutil.rmtree(wt_path, ignore_errors=True)
+                activity(f"GC stale worktree: {wt_path}")
+
     def _request_self_restart(self):
         """Gracefully terminate all agents and exit for systemd to restart."""
         activity("OPS RESTART — new commits detected, restarting orchestrator...")
@@ -908,22 +1261,34 @@ class StationManager:
         for name, agent in self.active_agents.items():
             if agent and agent.proc and agent.proc.poll() is None:
                 activity(f"Terminating {name} (PID {agent.proc.pid})")
-                agent.proc.terminate()
+                try:
+                    os.killpg(agent.proc.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    agent.proc.terminate()
                 try:
                     agent.proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    agent.proc.kill()
+                    try:
+                        os.killpg(agent.proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        agent.proc.kill()
                 agent.save_log()
         # Terminate per-train agents
         for train in self.trains:
             for role, agent in [("conductor", train.conductor), ("inspector", train.inspector)]:
                 if agent and agent.proc and agent.proc.poll() is None:
                     activity(f"Terminating {role}:{train.train_id} (PID {agent.proc.pid})")
-                    agent.proc.terminate()
+                    try:
+                        os.killpg(agent.proc.pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        agent.proc.terminate()
                     try:
                         agent.proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        agent.proc.kill()
+                        try:
+                            os.killpg(agent.proc.pid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            agent.proc.kill()
                     agent.save_log()
         activity("All agents stopped. Exiting for restart.")
         sys.exit(0)
@@ -951,6 +1316,7 @@ class StationManager:
             else:
                 train.inspector = None
             if rc != 0:
+                METRICS.agent_failures_total.inc({"agent": f"{role}:{train.train_id}"})
                 agent_output = agent.get_output() + agent.get_stderr()
                 if "out of extra usage" in agent_output or "rate limit" in agent_output.lower():
                     self.sleep_until = time.time() + config.SLEEP_MODE_DURATION
@@ -1003,7 +1369,6 @@ class StationManager:
                 f"(limit {config.MAX_AGENT_LAUNCHES_PER_HOUR}). "
                 f"Entering SERVICE SUSPENDED until {time.ctime(self.sleep_until)}"
             )
-            self.launch_times.clear()
             return None
 
         model = train.conductor_model if role == "conductor" else train.inspector_model
@@ -1014,6 +1379,7 @@ class StationManager:
             train.conductor = agent
         else:
             train.inspector = agent
+        METRICS.agent_launches_total.inc({"agent": agent_name})
         activity(f"DEPARTED [{agent_name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
 
@@ -1023,11 +1389,17 @@ class StationManager:
         agent_name = f"{role}:{train.train_id}"
         activity(f"OVERDUE [{agent_name}] after {elapsed:.0f}s — terminating")
         if agent.proc and agent.proc.poll() is None:
-            agent.proc.terminate()
+            try:
+                os.killpg(agent.proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                agent.proc.terminate()
             try:
                 agent.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                agent.proc.kill()
+                try:
+                    os.killpg(agent.proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    agent.proc.kill()
                 agent.proc.wait()
         agent.save_log(marker="[OVERDUE]")
 
@@ -1159,6 +1531,7 @@ class StationManager:
             if os.path.exists(in_progress):
                 os.remove(in_progress)
                 activity(f"TERMINATED spec after entropy: {os.path.basename(train.spec_path)}")
+                METRICS.specs_total.inc({"outcome": "entropy"})
 
         train.reset_pipeline()
 
@@ -1221,6 +1594,14 @@ class StationManager:
         if not project_dir:
             return
 
+        # Stall check: too many consecutive rejections → pause this project
+        now_stall = time.time()
+        if project_dir in self._stalled_projects:
+            if now_stall < self._stalled_projects[project_dir]:
+                return
+            del self._stalled_projects[project_dir]
+            activity(f"UNSTALLED [{os.path.basename(project_dir)}] — stall period expired, dispatcher resuming")
+
         active_trains = [t for t in self.trains if t.branch]
         if active_trains:
             train_ids = ", ".join(t.train_id for t in active_trains)
@@ -1245,11 +1626,15 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         app_logs = self._read_app_log_tail(project_dir) or "(no app.log found)"
+        rejected_specs = read_rejection_log(max_lines=20, project=project_dir, max_age_days=30)
+        work_balance_digest = self._gather_work_balance_digest(project_dir)
         prompt = config.DISPATCHER_PROMPT.format(
             timestamp=ts,
             working_dir=project_dir,
             backlog_dir=config.BACKLOG_DIR,
             app_logs=app_logs,
+            rejected_specs=rejected_specs,
+            work_balance_digest=work_balance_digest,
         )
         agent = self._launch_agent("dispatcher", prompt, cwd=project_dir)
         if agent is not None:
@@ -1326,11 +1711,14 @@ class StationManager:
         train.rework_count = 0
         train.spec_timeout_count = 0
 
-        # Rename spec to .in_progress before triage
+        # Rename spec to .in_progress before triage — this is the atomic claim step.
+        # If two trains see the same spec, only one rename succeeds; the other aborts here.
         try:
             os.rename(spec_path, spec_path + ".in_progress")
-        except OSError:
-            pass  # If rename fails, continue with original path; triage will handle it
+        except OSError as e:
+            log.warning("Failed to claim spec %s (%s) — aborting pickup", spec_path, e)
+            train.reset_pipeline()
+            return
 
         # Route to triage gate before building
         train.needs_triage = True
@@ -1363,26 +1751,73 @@ class StationManager:
                     train.triage_cooldown_until = time.time() + backoff
                     return
 
-                verdict = output.strip().split("\n")[0].strip().upper() if output else ""
-                # Strip markdown formatting (**text**, *text*, etc.) from verdict
-                verdict = re.sub(r'[\*_`]+', '', verdict)
-                reason = output.strip().split("\n", 1)[1].strip() if output and "\n" in output.strip() else ""
+                # Parse verdict and reason from triage output
+                first_line = output.strip().split("\n")[0].strip() if output else ""
+                # Strip markdown formatting (**text**, *text*, etc.)
+                first_line_clean = re.sub(r'[\*_`#]+', '', first_line)
+
+                # Check if verdict and reason are on same line (e.g., "REJECT — reason here")
+                if ' — ' in first_line_clean or ' - ' in first_line_clean:
+                    separator = ' — ' if ' — ' in first_line_clean else ' - '
+                    parts = first_line_clean.split(separator, 1)
+                    verdict = parts[0].strip().upper()
+                    reason = parts[1].strip() if len(parts) > 1 else ""
+                else:
+                    verdict = first_line_clean.upper()
+                    # Try multi-line format (reason on subsequent lines)
+                    reason = output.strip().split("\n", 1)[1].strip() if output and "\n" in output.strip() else ""
+
+                # Fallback 1: search for "Verdict: BUILD" / "## Verdict: REJECT" etc.
+                if not any(verdict.startswith(v) for v in ["BUILD", "REJECT", "HOLD"]):
+                    verdict_match = re.search(r'##?\s*Verdict:?\s*(\w+)', output, re.MULTILINE | re.IGNORECASE)
+                    if verdict_match:
+                        verdict = verdict_match.group(1).upper()
+                        verdict_pos = verdict_match.end()
+                        remaining = output[verdict_pos:].strip()
+                        if remaining and not remaining.startswith('\n'):
+                            reason = remaining.split('\n')[0].strip()
+                            if reason.startswith(('—', '-', ':')):
+                                reason = reason[1:].strip()
+                        if not reason:
+                            reason = remaining
+
+                # Fallback 2: scan every line for a standalone BUILD/REJECT/HOLD keyword.
+                # Handles responses that open with analysis sections (e.g. "## ANALYSIS ...
+                # ... BUILD — reason") where neither the first line nor a Verdict: header match.
+                if not any(verdict.startswith(v) for v in ["BUILD", "REJECT", "HOLD"]):
+                    for i, line in enumerate(output.split("\n")):
+                        clean = re.sub(r'[\*_`#]+', '', line).strip()
+                        m = re.match(r'^(BUILD|REJECT|HOLD)\b[\s:\-—]*(.*)?', clean, re.IGNORECASE)
+                        if m:
+                            verdict = m.group(1).upper()
+                            rest = (m.group(2) or "").strip()
+                            if not rest:
+                                rest = "\n".join(output.split("\n")[i + 1:]).strip()
+                            reason = rest
+                            break
 
                 if verdict.startswith("BUILD"):
                     train.needs_triage = False
                     train.triage_failures = 0  # Clear failures on successful triage
+                    # Reset consecutive rejection counter — something finally passed
+                    project = train.repo_dir or train.working_dir or ""
+                    if project:
+                        self._project_rejection_counts.pop(project, None)
                 elif verdict.startswith("REJECT"):
                     spec_title = train.branch.removeprefix("feature/")
                     reason_clean = _strip_markdown(_strip_reason_prefix(reason))
                     reason_display = _first_line_truncated(reason_clean, limit=150)
                     activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': {reason_display}")
-                    record_rejection(spec_title, reason[:300])
+                    project = train.repo_dir or train.working_dir or ""
+                    record_rejection(spec_title, reason[:300], project=project)
+                    METRICS.specs_total.inc({"outcome": "rejected"})
                     if train.spec_path and os.path.exists(train.spec_path):
                         os.remove(train.spec_path)
                     # Also remove .in_progress variant
                     in_progress = train.spec_path + ".in_progress"
                     if os.path.exists(in_progress):
                         os.remove(in_progress)
+                    self._on_triage_rejection(train)
                     train.reset_pipeline()
                 elif verdict.startswith("HOLD"):
                     spec_title = train.branch.removeprefix("feature/")
@@ -1403,19 +1838,25 @@ class StationManager:
                     spec_title = train.branch.removeprefix("feature/")
                     reason_msg = f"Triage returned unrecognized verdict: {verdict[:50]}"
                     activity(f"Triage:{train.train_id} — REJECTED spec '{spec_title}': triage verdict parse error")
-                    record_rejection(spec_title, reason_msg)
+                    project = train.repo_dir or train.working_dir or ""
+                    record_rejection(spec_title, reason_msg, project=project)
+                    METRICS.specs_total.inc({"outcome": "rejected"})
                     if train.spec_path and os.path.exists(train.spec_path):
                         os.remove(train.spec_path)
                     in_progress = train.spec_path + ".in_progress"
                     if os.path.exists(in_progress):
                         os.remove(in_progress)
+                    self._on_triage_rejection(train)
                     train.reset_pipeline()
             elif train.triage.is_timed_out():
                 # Triage timed out — fail-open but with exponential backoff
                 elapsed = time.time() - (train.triage.start_time or 0)
                 activity(f"OVERDUE [triage:{train.train_id}] after {elapsed:.0f}s — approving spec by default")
                 if train.triage.proc and train.triage.proc.poll() is None:
-                    train.triage.proc.terminate()
+                    try:
+                        os.killpg(train.triage.proc.pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        train.triage.proc.terminate()
                 train.triage = None
                 train.needs_triage = False
                 train.triage_failures += 1
@@ -1437,7 +1878,7 @@ class StationManager:
         working_dir = spec_data.get("working_dir", "")
         working_dir_exists = os.path.isdir(working_dir)
         recent_merges = self._git("log", "--oneline", "-15", cwd=working_dir) if working_dir_exists else "(none)"
-        rejected_specs = read_rejection_log(max_lines=2)
+        rejected_specs = read_rejection_log(max_lines=10, max_age_days=30)
         failed_specs = read_failure_log()
 
         prompt = config.TRIAGE_PROMPT.format(
@@ -1591,7 +2032,9 @@ class StationManager:
             # Reject after max retries, otherwise re-queue with incremented count
             if conflict_count > config.MAX_CONFLICT_RETRIES:
                 activity(f"REJECTED [{train.train_id}] spec '{spec_title}' after {config.MAX_CONFLICT_RETRIES} conflict retries")
-                record_rejection(spec_title, f"persistent merge conflict with {config.TRUNK_BRANCH} after {config.MAX_CONFLICT_RETRIES} attempts")
+                project = train.repo_dir or train.working_dir or ""
+                record_rejection(spec_title, f"persistent merge conflict with {config.TRUNK_BRANCH} after {config.MAX_CONFLICT_RETRIES} attempts", project=project)
+                METRICS.specs_total.inc({"outcome": "conflict"})
                 if train.spec_path:
                     ip_path = train.spec_path + ".in_progress"
                     if os.path.exists(ip_path):
@@ -1623,13 +2066,26 @@ class StationManager:
             config.REVIEW_DIR,
             f"{branch.replace('/', '_')}_feedback.md",
         )
+
+        # Read spec JSON to give Inspector the acceptance criteria
+        spec_json_str = "(spec not available)"
+        if train.spec_path:
+            ip_path = train.spec_path + ".in_progress"
+            spec_read_path = ip_path if os.path.exists(ip_path) else train.spec_path
+            try:
+                with open(spec_read_path) as f:
+                    spec_json_str = f.read().strip()
+            except OSError:
+                pass
+
         activity(f"Inspector:{train.train_id} — reviewing branch {branch} in {cwd}")
         prompt = config.INSPECTOR_PROMPT.format(
             branch_name=branch,
-            diff=diff[:8000],
+            diff=diff[:config.INSPECTOR_DIFF_MAX_CHARS],
             working_dir=cwd,
             review_dir=config.REVIEW_DIR,
             feedback_path=feedback_path,
+            spec_json=spec_json_str,
         )
         self._launch_train_agent(train, "inspector", prompt, cwd=cwd)
 
@@ -1708,38 +2164,27 @@ class StationManager:
         return os.path.join(config.DEVELOPMENT_DIR, config.DEFAULT_PROJECT)
 
     def _log_watcher_tick(self, project_dir: str):
-        """Per-tick grep for ERROR/WARNING lines. Triggers Signal on-demand when found."""
-        log_path = self._find_app_log(project_dir)
-        if not log_path:
-            return
+        """Per-tick grep for ERROR/WARNING lines across all registered log sources.
 
-        # Initialize offset to current EOF on first visit (don't scan old history)
-        if project_dir not in self.watcher_log_offsets:
+        Each source tracks its own read position. New lines are aggregated, then
+        filtered for error patterns. Signal is triggered on-demand when matches
+        are found, subject to dedup and open-bug throttling.
+        """
+        all_new_lines: list[str] = []
+        for source in self._log_sources:
             try:
-                self.watcher_log_offsets[project_dir] = os.path.getsize(log_path)
-            except OSError:
-                pass
+                all_new_lines.extend(source.read_new_lines(project_dir))
+            except Exception as e:
+                log.warning("Log source %s error: %s", source.name, e)
+
+        if not all_new_lines:
             return
 
-        stored = self.watcher_log_offsets[project_dir]
-        try:
-            size = os.path.getsize(log_path)
-        except OSError:
-            return
-        if size < stored:  # rotation
-            stored = 0
-        if size == stored:
-            return
-
-        with open(log_path, "r", errors="replace") as f:
-            f.seek(stored)
-            new_text = f.read()
-        self.watcher_log_offsets[project_dir] = size
-
-        # Find matching lines
-        matching = [l for l in new_text.splitlines() if _WATCHER_PATTERN.search(l)]
+        matching = [l for l in all_new_lines if _WATCHER_PATTERN.search(l)]
         if not matching:
             return
+
+        METRICS.log_errors_detected_total.inc(amount=len(matching))
 
         # Prune stale dedup entries (older than 1 hour)
         now = time.time()
@@ -1797,6 +2242,7 @@ class StationManager:
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         log_lines = "\n".join(matching_lines[:50])
+        METRICS.signal_triggers_total.inc()
         activity(f"SIGNAL [watcher] triggered — {len(matching_lines)} error lines detected")
         prompt = config.SIGNAL_PROMPT.format(
             log_lines=log_lines,
@@ -1979,6 +2425,12 @@ class StationManager:
         current_head = self._git_last_commit(cwd=repo_dir)
         self.last_merge_commit = current_head
         self.last_merge_time = time.time()
+        METRICS.specs_total.inc({"outcome": "merged"})
+        # Successful merge clears the stall state for this project
+        project = train.repo_dir or ""
+        if project:
+            self._project_rejection_counts.pop(project, None)
+            self._stalled_projects.pop(project, None)
 
         # Remove the worktree, then delete the feature branch from the main repo
         self._remove_worktree(train.repo_dir, train.working_dir)
@@ -1989,18 +2441,23 @@ class StationManager:
             self._deploy_to_railway(cwd=repo_dir)
         elif config.SERVICE_RESTART_CMD:
             try:
-                result = subprocess.run(
-                    config.SERVICE_RESTART_CMD,
-                    shell=True,
-                    timeout=config.SERVICE_RESTART_TIMEOUT,
-                    capture_output=True, text=True,
-                )
-                if result.returncode == 0:
-                    activity("SERVICE restarted successfully")
-                else:
-                    activity(f"SERVICE restart failed (rc={result.returncode}): {result.stderr[:200]}")
-            except subprocess.TimeoutExpired:
-                activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
+                cmd_parts = shlex.split(config.SERVICE_RESTART_CMD)
+            except ValueError as e:
+                activity(f"SERVICE restart skipped — invalid command string: {e}")
+                cmd_parts = []
+            if cmd_parts:
+                try:
+                    result = subprocess.run(
+                        cmd_parts,
+                        timeout=config.SERVICE_RESTART_TIMEOUT,
+                        capture_output=True, text=True,
+                    )
+                    if result.returncode == 0:
+                        activity("SERVICE restarted successfully")
+                    else:
+                        activity(f"SERVICE restart failed (rc={result.returncode}): {result.stderr[:200]}")
+                except subprocess.TimeoutExpired:
+                    activity(f"SERVICE restart timed out after {config.SERVICE_RESTART_TIMEOUT}s")
         else:
             activity("SERVICE restart skipped (no deployment method configured)")
 
@@ -2101,6 +2558,7 @@ class StationManager:
             # Remove the in-progress spec and record failure
             branch_name = train.branch.removeprefix("feature/") if train.branch else spec_name
             record_failure(branch_name, f"SLA breach ({int(elapsed)}s elapsed)")
+            METRICS.specs_total.inc({"outcome": "sla_breach"})
             if train.spec_path:
                 ip = train.spec_path + ".in_progress"
                 if os.path.exists(ip):
@@ -2254,6 +2712,12 @@ class StationManager:
                     activity("RESUMED — agents/pause file removed")
                     self._pause_logged = False
 
+                # Rotate logs if needed (cheap size check every tick; prune hourly)
+                self._maybe_rotate_logs()
+                # Periodic maintenance: recycle stale HOLD specs, GC orphaned worktrees
+                self._recycle_stale_drafts()
+                self._gc_orphaned_worktrees()
+
                 # Advance tick — invalidates all per-tick caches
                 self._advance_tick()
 
@@ -2312,21 +2776,33 @@ class StationManager:
             for name, agent in self.active_agents.items():
                 if agent and agent.proc and agent.proc.poll() is None:
                     activity(f"Terminating {name} (PID {agent.proc.pid})")
-                    agent.proc.terminate()
+                    try:
+                        os.killpg(agent.proc.pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        agent.proc.terminate()
                     try:
                         agent.proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        agent.proc.kill()
+                        try:
+                            os.killpg(agent.proc.pid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            agent.proc.kill()
                     agent.save_log()
             for train in self.trains:
                 for role, agent in [("conductor", train.conductor), ("inspector", train.inspector), ("triage", train.triage)]:
                     if agent and agent.proc and agent.proc.poll() is None:
                         activity(f"Terminating {role}:{train.train_id} (PID {agent.proc.pid})")
-                        agent.proc.terminate()
+                        try:
+                            os.killpg(agent.proc.pid, signal.SIGTERM)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            agent.proc.terminate()
                         try:
                             agent.proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
-                            agent.proc.kill()
+                            try:
+                                os.killpg(agent.proc.pid, signal.SIGKILL)
+                            except (ProcessLookupError, PermissionError, OSError):
+                                agent.proc.kill()
                         agent.save_log()
             activity("All agents stopped. Goodbye.")
 
@@ -2367,6 +2843,12 @@ if __name__ == "__main__":
 
     # Priority: --dashboard-port > --dashboard (8080) > env var > disabled
     dash_port = args.dashboard_port or (8080 if args.dashboard else config.DASHBOARD_PORT)
+
+    # Route SIGTERM (sent by systemd stop / kill) through the same cleanup path as Ctrl-C
+    def _sigterm_handler(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
 
     station_manager = StationManager()
 

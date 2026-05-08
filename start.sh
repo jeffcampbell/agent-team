@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Yamanote starting..."
 
 while true; do
-    [ -f "$SCRIPT_DIR/.env" ] && source "$SCRIPT_DIR/.env"
+    [ -f "$SCRIPT_DIR/.env" ] && set -a && source "$SCRIPT_DIR/.env" && set +a
     python3 orchestrator.py "$@"
     EXIT_CODE=$?
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Orchestrator exited (rc=$EXIT_CODE), restarting in 3 seconds..."

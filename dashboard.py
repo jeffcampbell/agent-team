@@ -12,6 +12,7 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import config
+from metrics import METRICS, render_prometheus
 
 # Cache the HTML file at import time (zero disk I/O per request)
 _HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
@@ -61,6 +62,23 @@ def _read_live_log(agent_name: str, lines: int = 150) -> list:
         return [l.rstrip("\n") for l in all_lines[-lines:]]
     except (OSError, FileNotFoundError):
         return []
+
+
+def _update_live_gauges(station_manager) -> None:
+    """Snapshot live StationManager state into the Prometheus gauges.
+
+    Called right before rendering /metrics so gauges always reflect current state.
+    Uses shallow copies of mutable containers for thread safety.
+    """
+    now = time.time()
+    launch_times = list(station_manager.launch_times)
+    trains = list(station_manager.trains)
+
+    METRICS.uptime_seconds.set(now - getattr(station_manager, "start_time", now))
+    METRICS.backlog_size.set(len(glob.glob(os.path.join(config.BACKLOG_DIR, "*.json"))))
+    METRICS.trains_active.set(sum(1 for t in trains if t.branch))
+    METRICS.launches_last_hour.set(sum(1 for t in launch_times if t > now - 3600))
+    METRICS.sleep_mode_active.set(1.0 if now < station_manager.sleep_until else 0.0)
 
 
 def _build_status_payload(station_manager, verbose: bool = False) -> dict:
@@ -333,6 +351,8 @@ def _handle_post(path: str, station_manager) -> dict:
 
     if path.startswith("/api/unskip/"):
         spec_name = path[len("/api/unskip/"):]
+        if not spec_name or ".." in spec_name or "/" in spec_name:
+            return {"ok": False, "message": "Invalid spec name"}
         skip_path = os.path.join(config.BACKLOG_DIR, spec_name + ".skip")
         try:
             os.remove(skip_path)
@@ -372,6 +392,14 @@ def _make_handler(station_manager):
                 payload = json.dumps(_build_status_payload(station_manager, verbose=verbose)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            elif self.path == "/metrics":
+                _update_live_gauges(station_manager)
+                payload = render_prometheus().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
