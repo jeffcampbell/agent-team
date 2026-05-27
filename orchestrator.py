@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 
 import config
+from budget import BudgetTracker, estimate_cost_usd
 from metrics import METRICS
 
 logging.basicConfig(
@@ -536,6 +537,10 @@ class StationManager:
         self.launch_times: deque[float] = deque()
         self.sleep_until: float = 0.0
 
+        # Monthly USD budget tracker (Agent SDK credit pool). Disabled if
+        # MONTHLY_BUDGET_USD is 0/unset — allows_launch() returns True.
+        self.budget = BudgetTracker(config.BUDGET_STATE_PATH, config.MONTHLY_BUDGET_USD)
+
         # Error cooldown: don't retry agents immediately after failures
         self.agent_cooldowns: dict[str, float] = {}  # agent name → earliest retry time
         self.consecutive_failures: dict[str, int] = {}  # agent name → failure streak
@@ -915,10 +920,23 @@ class StationManager:
             return None  # type: ignore[return-value]
 
         model = config.AGENT_MODELS.get(name, "claude-sonnet-4-5-20250929")
+
+        # Monthly budget gate
+        cost = estimate_cost_usd(name, model)
+        if not self.budget.allows_launch(cost):
+            if self.budget.should_warn():
+                snap = self.budget.snapshot()
+                activity(
+                    f"BUDGET EXHAUSTED — ${snap['spend_usd']:.2f} / ${snap['limit_usd']:.2f} "
+                    f"used this month ({snap['month']}). Skipping {name} launch."
+                )
+            return None
+
         agent = AgentProcess(name, prompt, cwd=cwd, model=model)
         agent.start()
         self.active_agents[name] = agent
         self.last_launch_times[name] = now
+        self.budget.record_launch(name, cost)
         METRICS.agent_launches_total.inc({"agent": name})
         activity(f"DEPARTED [{name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
@@ -1373,12 +1391,25 @@ class StationManager:
 
         model = train.conductor_model if role == "conductor" else train.inspector_model
         agent_name = f"{role}:{train.train_id}"
+
+        # Monthly budget gate
+        cost = estimate_cost_usd(agent_name, model)
+        if not self.budget.allows_launch(cost):
+            if self.budget.should_warn():
+                snap = self.budget.snapshot()
+                activity(
+                    f"BUDGET EXHAUSTED — ${snap['spend_usd']:.2f} / ${snap['limit_usd']:.2f} "
+                    f"used this month ({snap['month']}). Skipping {agent_name} launch."
+                )
+            return None
+
         agent = AgentProcess(agent_name, prompt, cwd=cwd, model=model)
         agent.start()
         if role == "conductor":
             train.conductor = agent
         else:
             train.inspector = agent
+        self.budget.record_launch(agent_name, cost)
         METRICS.agent_launches_total.inc({"agent": agent_name})
         activity(f"DEPARTED [{agent_name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent

@@ -39,16 +39,21 @@ AGENT_TIMEOUT_SECONDS = 1200  # max runtime per agent subprocess (20 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
-# Sonnet for everything — good balance of capability and cost.
+# Sonnet for the agents that produce code or specs; Haiku for classification,
+# gating, log scanning, and small-edit ops. Tuned for the post-2026-06-15
+# Agent SDK credit pool — Haiku is ~10× cheaper than Sonnet.
+
+SONNET_MODEL = "claude-sonnet-4-5-20250929"
+HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 
 AGENT_MODELS = {
-    "dispatcher":      "claude-sonnet-4-5-20250929",
-    "conductor":       "claude-sonnet-4-5-20250929",
-    "inspector":       "claude-sonnet-4-5-20250929",
-    "signal":          "claude-sonnet-4-5-20250929",
-    "station_manager": "claude-sonnet-4-5-20250929",
-    "ops":             "claude-sonnet-4-5-20250929",
-    "triage":          "claude-sonnet-4-5-20250929",
+    "dispatcher":      SONNET_MODEL,  # spec quality drives everything downstream
+    "conductor":       SONNET_MODEL,  # actual implementer (also overridden per-train)
+    "inspector":       HAIKU_MODEL,   # checklist review (also overridden per-train)
+    "signal":          HAIKU_MODEL,   # log scan + bug dedupe
+    "station_manager": HAIKU_MODEL,   # status report only
+    "ops":             HAIKU_MODEL,   # capped at <20-line diff
+    "triage":          HAIKU_MODEL,   # BUILD / REJECT / HOLD gate
 }
 
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
@@ -133,26 +138,53 @@ IDLE_SLA_SECONDS = 14400            # 4 hours all-idle before triggering dispatc
 # ─── Dashboard (optional) ────────────────────────────────────────────────
 DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 
+# ─── Token budget (Agent SDK credit pool tracker) ──────────────────────────
+# Cap monthly Anthropic spend. The tracker estimates per-launch cost from
+# TOKENS_PER_LAUNCH × MODEL_PRICES_USD, persists running spend to
+# agents/budget.json, and gates new launches once the cap is reached.
+# Resets at the start of each calendar month (UTC). 0 disables the gate.
+MONTHLY_BUDGET_USD = float(os.environ.get("AGENT_TEAM_MONTHLY_BUDGET_USD", "0"))
+BUDGET_STATE_PATH = os.path.join(BASE_DIR, "agents", "budget.json")
+# How often to log a "budget exhausted" warning while gated (seconds).
+BUDGET_WARN_INTERVAL = 600
+
+# Per-million-token USD rates (Anthropic list prices, no cache discount).
+MODEL_PRICES_USD = {
+    SONNET_MODEL: {"input": 3.0, "output": 15.0},
+    HAIKU_MODEL:  {"input": 1.0, "output":  5.0},
+}
+
+# Rough tokens used per agent launch — tune from your own logs over time.
+TOKENS_PER_LAUNCH = {
+    "dispatcher":      {"input": 30000, "output":  5000},
+    "conductor":       {"input": 80000, "output": 15000},
+    "inspector":       {"input": 20000, "output":  3000},
+    "triage":          {"input": 15000, "output":  2000},
+    "signal":          {"input": 10000, "output":  1000},
+    "station_manager": {"input":  5000, "output":  1000},
+    "ops":             {"input": 30000, "output":  5000},
+}
+
 # ─── Train configuration ───────────────────────────────────────────────────
 TRAIN_CONFIG = {
     "regular": {
         "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "0")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": SONNET_MODEL,  # high-complexity specs get a Sonnet review
         "complexity": "high",
         "dispatcher_interval": 1800,  # 30 min
     },
     "standard": {
         "count": int(os.environ.get("AGENT_TEAM_STANDARD_TRAINS", "1")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": HAIKU_MODEL,
         "complexity": "medium",
         "dispatcher_interval": 1800,  # 30 min
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": HAIKU_MODEL,
         "complexity": "low",
         "dispatcher_interval": 1800,  # 30 min
     },

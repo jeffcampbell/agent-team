@@ -80,6 +80,15 @@ def _update_live_gauges(station_manager) -> None:
     METRICS.launches_last_hour.set(sum(1 for t in launch_times if t > now - 3600))
     METRICS.sleep_mode_active.set(1.0 if now < station_manager.sleep_until else 0.0)
 
+    budget = getattr(station_manager, "budget", None)
+    if budget is not None:
+        snap = budget.snapshot()
+        METRICS.budget_spend_usd.set(snap["spend_usd"])
+        METRICS.budget_limit_usd.set(snap["limit_usd"] or 0.0)
+        METRICS.budget_utilization.set(snap["utilization"])
+        exhausted = snap["enabled"] and snap["utilization"] >= 1.0
+        METRICS.budget_exhausted.set(1.0 if exhausted else 0.0)
+
 
 def _build_status_payload(station_manager, verbose: bool = False) -> dict:
     """Snapshot mutable StationManager state into a JSON-safe dict.
@@ -307,6 +316,11 @@ def _build_status_payload(station_manager, verbose: bool = False) -> dict:
                 key = f"inspector:{train.train_id}"
                 verbose_logs[key] = _read_live_log(key)
 
+    budget_out = None
+    budget = getattr(station_manager, "budget", None)
+    if budget is not None:
+        budget_out = budget.snapshot()
+
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "uptime_seconds": round(now - start_time, 1),
@@ -317,6 +331,7 @@ def _build_status_payload(station_manager, verbose: bool = False) -> dict:
         "backlog": backlog_out,
         "completed": completed_out,
         "stats": stats_out,
+        "budget": budget_out,
         "activity": activity_lines,
         "config": config_out,
         "verbose_logs": verbose_logs,

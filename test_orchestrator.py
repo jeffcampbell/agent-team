@@ -1504,8 +1504,8 @@ class TestDashboardPayload(OrchestratorTestBase):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
         expected = {"timestamp", "uptime_seconds", "paused", "agents", "trains",
-                    "pipeline", "backlog", "completed", "stats", "activity", "config",
-                    "verbose_logs"}
+                    "pipeline", "backlog", "completed", "stats", "budget", "activity",
+                    "config", "verbose_logs"}
         self.assertEqual(set(payload.keys()), expected)
 
     def test_backward_compat_pipeline_from_active_train(self):

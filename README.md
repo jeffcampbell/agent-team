@@ -21,12 +21,14 @@ Each phase decides whether to launch its agent based on the current state of the
 | Agent | Model | Role |
 |---|---|---|
 | **Dispatcher** | Sonnet | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
-| **Triage** | Sonnet | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
+| **Triage** | Haiku | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
 | **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
-| **Inspector** | Sonnet | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
-| **Signal** | Sonnet | Monitors application logs for errors and files bug tickets into the backlog |
-| **Station Manager** | Sonnet | Resets branches when Conductor gets stuck in edit loops |
-| **Operations** | Sonnet | Analyzes orchestrator activity and implements small operational improvements |
+| **Inspector** | Haiku¹ | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
+| **Signal** | Haiku | Monitors application logs for errors and files bug tickets into the backlog |
+| **Station Manager** | Haiku | Resets branches when Conductor gets stuck in edit loops |
+| **Operations** | Haiku | Analyzes orchestrator activity and implements small operational improvements |
+
+¹ Inspector uses Sonnet on the `regular` (high-complexity) train. Defaults are tuned to fit a modest Agent SDK credit pool; override `SONNET_MODEL` / `HAIKU_MODEL` or the per-agent entries in `config.py` to change.
 
 ### Pipeline flow
 
@@ -218,6 +220,10 @@ Metrics exposed:
 | `yamanote_launches_last_hour` | Gauge | Agent launches in the past 60 minutes |
 | `yamanote_sleep_mode_active` | Gauge | `1` if rate-limit sleep mode is active |
 | `yamanote_uptime_seconds` | Gauge | Seconds since the orchestrator started |
+| `yamanote_budget_spend_usd` | Gauge | Estimated month-to-date Anthropic API spend |
+| `yamanote_budget_limit_usd` | Gauge | Configured monthly USD cap (`0` if disabled) |
+| `yamanote_budget_utilization` | Gauge | Spend / cap as a fraction |
+| `yamanote_budget_exhausted` | Gauge | `1` when the budget gate is blocking new launches |
 
 Point Prometheus at `http://<host>:<port>/metrics` and connect Grafana for dashboards.
 
@@ -295,6 +301,7 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TEAM_REGULAR_TRAINS` | `0` | Number of high-complexity parallel pipelines |
 | `AGENT_TEAM_STANDARD_TRAINS` | `1` | Number of medium-complexity parallel pipelines |
 | `AGENT_TEAM_EXPRESS_TRAINS` | `0` | Number of low-complexity parallel pipelines |
+| `AGENT_TEAM_MONTHLY_BUDGET_USD` | `0` *(disabled)* | Monthly USD cap on estimated Anthropic spend. Pauses launches when reached. Resets at month boundary (UTC). |
 
 ### Timing
 
@@ -380,6 +387,7 @@ station_manager.register_log_source(MySource())
 
 - **Self-protection** — agents cannot create specs targeting the orchestrator's own codebase
 - **Fare limit** — enters sleep mode for 1 hour after 30 launches in a rolling hour
+- **Monthly token budget** — when `AGENT_TEAM_MONTHLY_BUDGET_USD` is set, the orchestrator estimates the cost of each launch from `TOKENS_PER_LAUNCH × MODEL_PRICES_USD` in `config.py`, tracks running spend in `agents/budget.json`, and skips new launches once the cap is reached. Resets at the start of each calendar month (UTC). The dashboard shows a fuel-gauge chip; estimates are coarse — tune `TOKENS_PER_LAUNCH` from your own usage over time
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
 - **Timeout enforcement** — agents are terminated after 20 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts

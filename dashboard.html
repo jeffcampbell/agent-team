@@ -825,15 +825,42 @@ function renderAgents(agents, trains) {
   }
 }
 
-function renderStats(stats) {
+function renderStats(stats, budget) {
   var el = document.getElementById('statsBar');
   var html = '<span class="stat-item">Launches/hr: <strong>' +
     stats.launches_last_hour + '/' + stats.max_launches_per_hour + '</strong></span>';
+  if (budget && budget.enabled) {
+    var util = Math.max(0, budget.utilization || 0);
+    var pct = Math.min(100, util * 100);
+    var color = util >= 1.0 ? '#e25555' : (util >= 0.8 ? '#e2a955' : '#4a8');
+    html += '<span class="stat-item" title="Month ' + esc(budget.month) +
+      ' \u2014 resets at month boundary (UTC)">' +
+      'Budget: <strong>$' + budget.spend_usd.toFixed(2) +
+      ' / $' + budget.limit_usd.toFixed(2) + '</strong> ' +
+      '<span style="display:inline-block;width:80px;height:8px;background:#222;border-radius:4px;vertical-align:middle;margin-left:6px;">' +
+      '<span style="display:inline-block;width:' + pct.toFixed(1) + '%;height:100%;background:' + color + ';border-radius:4px;"></span>' +
+      '</span></span>';
+    if (util >= 1.0) {
+      html += '<span class="stat-sleep">BUDGET EXHAUSTED \u2014 launches blocked until ' +
+        esc(nextMonth(budget.month)) + '</span>';
+    }
+  }
   if (stats.sleep_mode_active) {
     html += '<span class="stat-sleep">SERVICE SUSPENDED \u2014 ' +
       fmtDuration(stats.sleep_remaining_seconds) + ' remaining</span>';
   }
   el.innerHTML = html;
+}
+
+function nextMonth(ym) {
+  // "YYYY-MM" -> "YYYY-MM" of the next month
+  var parts = String(ym).split('-');
+  var y = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10);
+  if (!y || !m) return '';
+  m += 1;
+  if (m > 12) { m = 1; y += 1; }
+  return y + '-' + (m < 10 ? '0' + m : m);
 }
 
 function esc(s) {
@@ -998,7 +1025,7 @@ function refresh() {
       renderUptime(data.uptime_seconds);
       renderAgents(data.agents || {}, data.trains || []);
       renderTrains(data.trains || []);
-      renderStats(data.stats || {});
+      renderStats(data.stats || {}, data.budget || null);
       var activeTraveling = renderTraveling(data.trains || []);
       // Tag in-progress titles so backlog can hide them
       var travelingTitles = {};
