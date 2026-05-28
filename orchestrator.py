@@ -2572,6 +2572,12 @@ class StationManager:
         if "ops" in self.agent_cooldowns and time.time() < self.agent_cooldowns["ops"]:
             return
 
+        # Deterministic trigger gate — skip unless something is actionable
+        # (or the max-idle gap has elapsed). Most quiet hours, we return here.
+        should_launch, reason = self._ops_should_launch()
+        if not should_launch:
+            return
+
         activity_tail, git_log = self._gather_ops_context()
         prompt = config.OPS_PROMPT.format(
             base_dir=config.BASE_DIR,
@@ -2580,7 +2586,42 @@ class StationManager:
         )
         agent = self._launch_agent("ops", prompt, cwd=config.BASE_DIR)
         if agent is not None:
+            activity(f"OPS triggered — {reason}")
             self._ops_head_before = self._git_last_commit(cwd=config.BASE_DIR)
+
+    def _ops_should_launch(self) -> tuple[bool, str]:
+        """Decide whether Ops has something worth investigating right now.
+
+        Read-only check against in-memory state — safe to call every tick.
+        Returns (True, reason) when any trigger fires or the max-idle gap has
+        elapsed; otherwise (False, ""). The reason is logged when Ops fires.
+        """
+        failing = [name for name, count in self.consecutive_failures.items() if count > 0]
+        if failing:
+            return True, f"agent failures: {', '.join(sorted(failing))}"
+
+        if time.time() < self.sleep_until:
+            return True, "sleep mode active"
+
+        if self.restart_pending:
+            return True, "restart pending"
+
+        if self._stalled_projects:
+            stalled = sorted(os.path.basename(p) for p in self._stalled_projects)
+            return True, f"stalled projects: {', '.join(stalled)}"
+
+        snap = self.budget.snapshot()
+        if snap.get("enabled") and snap.get("utilization", 0) >= config.OPS_BUDGET_TRIGGER:
+            return True, f"budget at {snap['utilization'] * 100:.0f}%"
+
+        # Safety net: don't go dark for too long. StationManager init seeds
+        # last_launch_times["ops"] = startup time, so this can't accidentally
+        # fire on a fresh orchestrator.
+        last_ops = self.last_launch_times.get("ops", 0)
+        if last_ops > 0 and time.time() - last_ops > config.MAX_OPS_IDLE_SECONDS:
+            return True, f"idle gap > {config.MAX_OPS_IDLE_SECONDS}s"
+
+        return False, ""
 
     # ─── SLA enforcement ─────────────────────────────────────────────────
 

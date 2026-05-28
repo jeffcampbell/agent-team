@@ -334,6 +334,8 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `MAX_SPEC_TIMEOUTS` | 2 | Conductor timeouts on a spec before it is dropped |
 | `MAX_CONFLICT_RETRIES` | 3 | Merge conflict retries before a spec is permanently rejected |
 | `MAX_CONSECUTIVE_REJECTIONS` | 5 | Consecutive triage rejections before a project's dispatcher is paused |
+| `MAX_OPS_IDLE_SECONDS` | 86400 (24h) | Safety-net interval — fire Ops at least this often even when no triggers are active |
+| `OPS_BUDGET_TRIGGER` | 0.8 | Budget-utilization fraction that triggers an Ops launch |
 | `STALL_PAUSE_SECONDS` | 86400s (24 hr) | How long to pause a stalled project's dispatcher |
 | `DRAFTS_RECYCLE_AGE_SECONDS` | 86400s (24 hr) | Age before a HOLD spec is moved back to backlog |
 | `WORKTREE_GC_INTERVAL` | 3600s (1 hr) | How often to scan for and remove orphaned git worktrees |
@@ -390,6 +392,7 @@ station_manager.register_log_source(MySource())
 - **Self-protection** — agents cannot create specs targeting the orchestrator's own codebase
 - **Fare limit** — enters sleep mode for 1 hour after 30 launches in a rolling hour
 - **Monthly token budget** — when `AGENT_TEAM_MONTHLY_BUDGET_USD` is set, the orchestrator estimates the cost of each launch from `TOKENS_PER_LAUNCH × MODEL_PRICES_USD` in `config.py`, tracks running spend in `agents/budget.json`, and skips new launches once the cap is reached. Resets at the start of each calendar month (UTC). The dashboard shows a fuel-gauge chip; estimates are coarse — tune `TOKENS_PER_LAUNCH` from your own usage over time
+- **Ops trigger gate** — Ops only launches when something is actionable: agent failures, sleep mode, restart pending, stalled projects, or budget at ≥ `OPS_BUDGET_TRIGGER` utilization. As a safety net it also fires if no Ops launch has happened in `MAX_OPS_IDLE_SECONDS` (default 24h). The activity log records the trigger reason; quiet hours produce no Ops launches
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
 - **Timeout enforcement** — agents are terminated after 20 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts

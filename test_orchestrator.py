@@ -1642,6 +1642,109 @@ class TestSpecTimeoutHandling(OrchestratorTestBase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TestOpsTriggerGate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestOpsTriggerGate(OrchestratorTestBase):
+    """Ops should only launch when something is actionable (or the idle gap fires)."""
+
+    def test_no_triggers_no_launch(self):
+        sm = self._make_station_manager()
+        # Simulate Ops having run recently so the idle gap doesn't fire.
+        sm.last_launch_times["ops"] = time.time()
+        should, reason = sm._ops_should_launch()
+        self.assertFalse(should)
+        self.assertEqual(reason, "")
+
+    def test_fresh_orchestrator_no_triggers_no_launch(self):
+        # StationManager init seeds last_launch_times["ops"] = startup time,
+        # so the idle-gap rule must not fire on a fresh orchestrator with no
+        # triggers — same path as "no triggers, recently ran".
+        sm = self._make_station_manager()
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_consecutive_failures_fire(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.consecutive_failures["dispatcher"] = 2
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("dispatcher", reason)
+
+    def test_zero_failure_count_does_not_fire(self):
+        # consecutive_failures[name] = 0 entries (left over after success) must not trigger
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.consecutive_failures["dispatcher"] = 0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_sleep_mode_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.sleep_until = time.time() + 600
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("sleep", reason)
+
+    def test_restart_pending_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.restart_pending = True
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("restart", reason)
+
+    def test_stalled_projects_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm._stalled_projects = {"/dev/my-app": time.time() + 3600}
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("my-app", reason)
+
+    def test_budget_high_utilization_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 100.0
+        sm.budget._state["spend_usd"] = 85.0
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("budget", reason)
+
+    def test_budget_low_utilization_does_not_fire(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 100.0
+        sm.budget._state["spend_usd"] = 10.0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_budget_disabled_does_not_fire(self):
+        # Even at notional 100% utilization, if budget cap is 0 the trigger is silent.
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 0
+        sm.budget._state["spend_usd"] = 999.0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_idle_gap_fires_after_threshold(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time() - (config.MAX_OPS_IDLE_SECONDS + 60)
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("idle gap", reason)
+
+    def test_idle_gap_does_not_fire_before_threshold(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time() - 600  # 10 min ago
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Activity Log Cleanup Utilities
 # ═══════════════════════════════════════════════════════════════════════════════
 
