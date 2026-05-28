@@ -39,16 +39,19 @@ AGENT_TIMEOUT_SECONDS = 1200  # max runtime per agent subprocess (20 minutes)
 SLEEP_MODE_DURATION = 3600  # 1 hour sleep when cost guardrail triggers
 
 # ─── Per-agent models ────────────────────────────────────────────────────────
-# Sonnet for everything — good balance of capability and cost.
+# Sonnet for the agents that produce code or specs; Haiku for classification,
+# gating, log scanning, and small-edit ops. Tuned for the post-2026-06-15
+# Agent SDK credit pool — Haiku is ~10× cheaper than Sonnet.
+
+SONNET_MODEL = "claude-sonnet-4-5-20250929"
+HAIKU_MODEL  = "claude-haiku-4-5-20251001"
 
 AGENT_MODELS = {
-    "dispatcher":      "claude-sonnet-4-5-20250929",
-    "conductor":       "claude-sonnet-4-5-20250929",
-    "inspector":       "claude-sonnet-4-5-20250929",
-    "signal":          "claude-sonnet-4-5-20250929",
-    "station_manager": "claude-sonnet-4-5-20250929",
-    "ops":             "claude-sonnet-4-5-20250929",
-    "triage":          "claude-sonnet-4-5-20250929",
+    "dispatcher":      SONNET_MODEL,  # spec quality drives everything downstream
+    "conductor":       SONNET_MODEL,  # actual implementer (also overridden per-train)
+    "inspector":       HAIKU_MODEL,   # checklist review (also overridden per-train)
+    "ops":             HAIKU_MODEL,   # capped at <20-line diff
+    "triage":          HAIKU_MODEL,   # BUILD / REJECT / HOLD gate
 }
 
 # ─── Per-agent minimum intervals (seconds between launches) ─────────────────
@@ -57,8 +60,6 @@ AGENT_MIN_INTERVALS = {
     "dispatcher":      1800,   # 30 minutes
     "conductor":       0,      # on-demand (spec-driven)
     "inspector":       0,      # on-demand (eng completion-driven)
-    "signal":          0,      # on-demand (triggered by log watcher, not polling)
-    "station_manager": 0,      # on-demand
     "ops":             3600,   # 1 hour
     "triage":          0,      # on-demand (spec-driven)
 }
@@ -101,11 +102,12 @@ MAX_CONFLICT_RETRIES = 3
 
 AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent after non-zero exit
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
-SIGNAL_MAX_BACKOFF = 300           # cap Signal failure backoff at 5 min
 ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing conductor
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
-MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
+MAX_SRE_OPEN_BUGS = 3              # skip Signal bug ticket creation if this many are already open
+MAX_OPS_IDLE_SECONDS = 86400       # 24h — fire Ops at least this often even when no triggers
+OPS_BUDGET_TRIGGER = 0.8           # fire Ops when budget utilization reaches this fraction
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 INSPECTOR_DIFF_MAX_CHARS = 20000   # max diff characters passed to Inspector prompt
 LOG_MAX_SIZE_BYTES = 5 * 1024 * 1024  # rotate activity.log when it exceeds this size (5MB)
@@ -133,26 +135,51 @@ IDLE_SLA_SECONDS = 14400            # 4 hours all-idle before triggering dispatc
 # ─── Dashboard (optional) ────────────────────────────────────────────────
 DASHBOARD_PORT = int(os.environ.get("AGENT_TEAM_DASHBOARD_PORT", "0"))
 
+# ─── Token budget (Agent SDK credit pool tracker) ──────────────────────────
+# Cap monthly Anthropic spend. The tracker estimates per-launch cost from
+# TOKENS_PER_LAUNCH × MODEL_PRICES_USD, persists running spend to
+# agents/budget.json, and gates new launches once the cap is reached.
+# Resets at the start of each calendar month (UTC). 0 disables the gate.
+MONTHLY_BUDGET_USD = float(os.environ.get("AGENT_TEAM_MONTHLY_BUDGET_USD", "0"))
+BUDGET_STATE_PATH = os.path.join(BASE_DIR, "agents", "budget.json")
+# How often to log a "budget exhausted" warning while gated (seconds).
+BUDGET_WARN_INTERVAL = 600
+
+# Per-million-token USD rates (Anthropic list prices, no cache discount).
+MODEL_PRICES_USD = {
+    SONNET_MODEL: {"input": 3.0, "output": 15.0},
+    HAIKU_MODEL:  {"input": 1.0, "output":  5.0},
+}
+
+# Rough tokens used per agent launch — tune from your own logs over time.
+TOKENS_PER_LAUNCH = {
+    "dispatcher":      {"input": 30000, "output":  5000},
+    "conductor":       {"input": 80000, "output": 15000},
+    "inspector":       {"input": 20000, "output":  3000},
+    "triage":          {"input": 15000, "output":  2000},
+    "ops":             {"input": 30000, "output":  5000},
+}
+
 # ─── Train configuration ───────────────────────────────────────────────────
 TRAIN_CONFIG = {
     "regular": {
         "count": int(os.environ.get("AGENT_TEAM_REGULAR_TRAINS", "0")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": SONNET_MODEL,  # high-complexity specs get a Sonnet review
         "complexity": "high",
         "dispatcher_interval": 1800,  # 30 min
     },
     "standard": {
         "count": int(os.environ.get("AGENT_TEAM_STANDARD_TRAINS", "1")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": HAIKU_MODEL,
         "complexity": "medium",
         "dispatcher_interval": 1800,  # 30 min
     },
     "express": {
         "count": int(os.environ.get("AGENT_TEAM_EXPRESS_TRAINS", "0")),
-        "conductor_model": "claude-sonnet-4-5-20250929",
-        "inspector_model": "claude-sonnet-4-5-20250929",
+        "conductor_model": SONNET_MODEL,
+        "inspector_model": HAIKU_MODEL,
         "complexity": "low",
         "dispatcher_interval": 1800,  # 30 min
     },
@@ -274,11 +301,14 @@ You are the Conductor agent. Implement the feature spec below.
 
 Spec: {spec_json}
 
+{relevant_files}
+
 1. cd {working_dir}. Confirm branch is {branch_name} (if not, STOP — do not checkout).
 2. Run `git log --oneline -8 {repo_dir}` — don't duplicate or revert recent main commits.
-3. Implement the spec. Handle errors on all service/DB/API return values.
-4. If deleting files or routes, verify the project builds before committing.
-5. Commit with clear messages. Do NOT merge. Summarize changes to stdout.
+3. Implement the spec. Start with the files above when they apply, but read others as needed.
+4. Handle errors on all service/DB/API return values.
+5. If deleting files or routes, verify the project builds before committing.
+6. Commit with clear messages. Do NOT merge. Summarize changes to stdout.
 """
 
 CONDUCTOR_REWORK_PROMPT = """\
@@ -291,6 +321,8 @@ Branch: {branch_name} — stay on this branch, do NOT checkout.
 
 Inspector feedback:
 {reviewer_feedback}
+
+{relevant_files}
 
 1. cd {working_dir}. Run `git log --oneline -8 {repo_dir}` to check for recent main merges.
 2. Address each issue raised. Handle errors on all service/DB/API return values.
@@ -326,28 +358,6 @@ Do NOT request additional tests beyond criterion (4).
 Write feedback to: {feedback_path}
 First line MUST be either "APPROVED" or "CHANGES_REQUESTED".
 If requesting changes, cite specific files and line numbers. Do NOT merge.
-"""
-
-SIGNAL_PROMPT = """\
-You are the Signal agent. Analyze log lines and file bug reports for new issues.
-
-Project: {working_dir}
-Open bugs (do NOT duplicate): {existing_bugs}
-
-Log lines:
-{log_lines}
-
-If you find a NEW issue, write a JSON bug ticket to {backlog_dir}/:
-  {{"title": "bug-summary", "description": "...", "priority": "high", "created_by": "signal", "working_dir": "{working_dir}"}}
-  Name: {timestamp}_bug_{{summary}}.json
-If already tracked or healthy, report to stdout only.
-"""
-
-STATION_MANAGER_PROMPT = """\
-You are the Station Manager. Assess workflow status and report bottlenecks.
-
-Active agents: {active_agents} | Backlog: {backlog_count}
-Recent merges: {recent_merges} | Edit counts: {eng_edits}
 """
 
 OPS_PROMPT = """\

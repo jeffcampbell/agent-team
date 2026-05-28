@@ -137,6 +137,32 @@ class Metrics:
         )
     )
 
+    # ── Budget tracker ──────────────────────────────────────────────────────
+    budget_spend_usd: _Gauge = field(
+        default_factory=lambda: _Gauge(
+            "yamanote_budget_spend_usd",
+            "Estimated month-to-date Anthropic API spend in USD.",
+        )
+    )
+    budget_limit_usd: _Gauge = field(
+        default_factory=lambda: _Gauge(
+            "yamanote_budget_limit_usd",
+            "Configured monthly USD budget cap (0 if unlimited).",
+        )
+    )
+    budget_utilization: _Gauge = field(
+        default_factory=lambda: _Gauge(
+            "yamanote_budget_utilization",
+            "Fraction of monthly budget consumed (0.0 to 1.0+).",
+        )
+    )
+    budget_exhausted: _Gauge = field(
+        default_factory=lambda: _Gauge(
+            "yamanote_budget_exhausted",
+            "1 if the budget gate is currently blocking launches, else 0.",
+        )
+    )
+
 
 METRICS = Metrics()
 
@@ -153,6 +179,10 @@ _GAUGES = [
     "launches_last_hour",
     "sleep_mode_active",
     "uptime_seconds",
+    "budget_spend_usd",
+    "budget_limit_usd",
+    "budget_utilization",
+    "budget_exhausted",
 ]
 
 

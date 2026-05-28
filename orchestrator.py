@@ -16,7 +16,9 @@ from abc import ABC, abstractmethod
 from collections import deque
 
 import config
+from budget import BudgetTracker, estimate_cost_usd
 from metrics import METRICS
+from spec_context import build_relevant_files_block
 
 logging.basicConfig(
     level=logging.INFO,
@@ -524,8 +526,6 @@ class StationManager:
         # Global agents (not per-train)
         self.active_agents: dict[str, AgentProcess | None] = {
             "dispatcher": None,
-            "signal": None,
-            "station_manager": None,
             "ops": None,
             "triage": None,
         }
@@ -536,14 +536,15 @@ class StationManager:
         self.launch_times: deque[float] = deque()
         self.sleep_until: float = 0.0
 
+        # Monthly USD budget tracker (Agent SDK credit pool). Disabled if
+        # MONTHLY_BUDGET_USD is 0/unset — allows_launch() returns True.
+        self.budget = BudgetTracker(config.BUDGET_STATE_PATH, config.MONTHLY_BUDGET_USD)
+
         # Error cooldown: don't retry agents immediately after failures
         self.agent_cooldowns: dict[str, float] = {}  # agent name → earliest retry time
         self.consecutive_failures: dict[str, int] = {}  # agent name → failure streak
         self.last_launch_times: dict[str, float] = {}  # agent name → last launch timestamp
 
-        # Signal high-water mark: only analyze new log lines since last run
-        self.sre_log_offsets: dict[str, int] = {}  # project_dir → byte offset in app.log
-        self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
         self.last_merge_time: float = 0.0  # timestamp of last merge (to skip Signal during deployment)
 
         # Log watcher: pluggable sources + dedup state
@@ -825,20 +826,15 @@ class StationManager:
                     )
                     return False
                 self.consecutive_failures[name] = self.consecutive_failures.get(name, 0) + 1
-                max_backoff = config.SIGNAL_MAX_BACKOFF if name == "signal" else config.MAX_ERROR_BACKOFF
                 backoff = min(
                     config.AGENT_ERROR_COOLDOWN * (2 ** self.consecutive_failures[name]),
-                    max_backoff,
+                    config.MAX_ERROR_BACKOFF,
                 )
                 cooldown_until = time.time() + backoff
                 self.agent_cooldowns[name] = cooldown_until
                 activity(f"DELAY [{name}] — failure #{self.consecutive_failures[name]}, retry after {backoff}s")
-                # Signal failed — roll back log offsets so the same lines are retried next run
-                if name == "signal":
-                    self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
-            self._sre_prev_offsets.clear()
             return False
         if agent.is_timed_out():
             self._kill_timed_out_agent(name, agent)
@@ -872,11 +868,6 @@ class StationManager:
         )
         self.agent_cooldowns[name] = time.time() + backoff
         activity(f"DELAY [{name}] — overdue #{self.consecutive_failures[name]}, retry after {backoff}s")
-
-        # Signal timed out — roll back log offsets so those lines are retried next run
-        if name == "signal":
-            self.sre_log_offsets.update(self._sre_prev_offsets)
-        self._sre_prev_offsets.clear()
 
     def _launch_agent(self, name: str, prompt: str, cwd: str | None = None) -> AgentProcess | None:
         # Error cooldown check
@@ -915,10 +906,23 @@ class StationManager:
             return None  # type: ignore[return-value]
 
         model = config.AGENT_MODELS.get(name, "claude-sonnet-4-5-20250929")
+
+        # Monthly budget gate
+        cost = estimate_cost_usd(name, model)
+        if not self.budget.allows_launch(cost):
+            if self.budget.should_warn():
+                snap = self.budget.snapshot()
+                activity(
+                    f"BUDGET EXHAUSTED — ${snap['spend_usd']:.2f} / ${snap['limit_usd']:.2f} "
+                    f"used this month ({snap['month']}). Skipping {name} launch."
+                )
+            return None
+
         agent = AgentProcess(name, prompt, cwd=cwd, model=model)
         agent.start()
         self.active_agents[name] = agent
         self.last_launch_times[name] = now
+        self.budget.record_launch(name, cost)
         METRICS.agent_launches_total.inc({"agent": name})
         activity(f"DEPARTED [{name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
@@ -1050,78 +1054,6 @@ class StationManager:
             capture_output=True, text=True,
         )
         return result.stdout
-
-    def _read_new_log_lines(self, project_dir: str) -> str:
-        """Read only log lines written since the last Signal run (high-water mark)."""
-        if config.RAILWAY_PROJECT:
-            return self._read_new_railway_logs(project_dir)
-
-        log_path = self._find_app_log(project_dir)
-        if not log_path:
-            return ""
-
-        if project_dir not in self.sre_log_offsets:
-            # First run (or after restart): set high-water mark to current EOF.
-            # Don't re-analyze logs that were already seen before the restart.
-            try:
-                self.sre_log_offsets[project_dir] = os.path.getsize(log_path)
-            except OSError:
-                pass
-            return ""
-
-        stored_offset = self.sre_log_offsets[project_dir]
-        try:
-            file_size = os.path.getsize(log_path)
-        except OSError:
-            return ""
-
-        # Log rotation: file shrank below stored offset → reset to start
-        if file_size < stored_offset:
-            stored_offset = 0
-
-        if file_size == stored_offset:
-            return ""  # No new content
-
-        with open(log_path, "r") as f:
-            f.seek(stored_offset)
-            new_content = f.read()
-
-        self._sre_prev_offsets[project_dir] = stored_offset
-        self.sre_log_offsets[project_dir] = file_size
-        return new_content
-
-    def _read_new_railway_logs(self, project_dir: str) -> str:
-        """Fetch Railway production logs and return only lines not seen before."""
-        key = "_railway_"
-        output = self._fetch_railway_logs(config.RAILWAY_PRODUCTION_ENV)
-        if not output:
-            return ""
-
-        lines = output.splitlines()
-        if not lines:
-            return ""
-
-        if key not in self.sre_log_offsets:
-            # First run: set high-water mark, return empty (same semantics as local mode)
-            self._sre_prev_offsets[key] = None
-            self.sre_log_offsets[key] = lines[-1]
-            return ""
-
-        last_seen = self.sre_log_offsets[key]
-        # Find where the last-seen line is in the new output
-        try:
-            idx = lines.index(last_seen)
-            new_lines = lines[idx + 1:]
-        except ValueError:
-            # Last-seen line not found (log rotated or too much new output) — return all
-            new_lines = lines
-
-        if not new_lines:
-            return ""
-
-        self._sre_prev_offsets[key] = last_seen
-        self.sre_log_offsets[key] = new_lines[-1]
-        return "\n".join(new_lines)
 
     def _gather_ops_context(self) -> tuple[str, str]:
         """Collect diagnostic data for the ops agent."""
@@ -1373,12 +1305,25 @@ class StationManager:
 
         model = train.conductor_model if role == "conductor" else train.inspector_model
         agent_name = f"{role}:{train.train_id}"
+
+        # Monthly budget gate
+        cost = estimate_cost_usd(agent_name, model)
+        if not self.budget.allows_launch(cost):
+            if self.budget.should_warn():
+                snap = self.budget.snapshot()
+                activity(
+                    f"BUDGET EXHAUSTED — ${snap['spend_usd']:.2f} / ${snap['limit_usd']:.2f} "
+                    f"used this month ({snap['month']}). Skipping {agent_name} launch."
+                )
+            return None
+
         agent = AgentProcess(agent_name, prompt, cwd=cwd, model=model)
         agent.start()
         if role == "conductor":
             train.conductor = agent
         else:
             train.inspector = agent
+        self.budget.record_launch(agent_name, cost)
         METRICS.agent_launches_total.inc({"agent": agent_name})
         activity(f"DEPARTED [{agent_name}] PID {agent.proc.pid} model={model} cwd={cwd or 'default'}")
         return agent
@@ -1960,6 +1905,7 @@ class StationManager:
             working_dir=worktree_path,
             repo_dir=train.repo_dir or worktree_path,
             branch_name=branch_name,
+            relevant_files=build_relevant_files_block(worktree_path, spec_data),
         )
         agent = self._launch_train_agent(train, "conductor", prompt, cwd=worktree_path)
         if agent is None:
@@ -2152,6 +2098,7 @@ class StationManager:
             reviewer_feedback=reviewer_feedback,
             working_dir=cwd,
             repo_dir=train.repo_dir or cwd,
+            relevant_files=build_relevant_files_block(cwd, spec_data),
         )
         self._launch_train_agent(train, "conductor", prompt, cwd=cwd)
         train.edits_tallied = False
@@ -2224,37 +2171,77 @@ class StationManager:
         self._trigger_signal_reactive(project_dir, matching)
 
     def _trigger_signal_reactive(self, project_dir: str, matching_lines: list[str]):
-        """Launch Signal on-demand to analyze error lines found by the log watcher."""
-        if self._is_agent_active("signal"):
-            return
+        """File a bug spec deterministically from log-watcher-filtered error lines.
 
-        # Skip Signal for 2 minutes after a merge to let deployment propagate
+        Pattern matching, dedup, and open-bug throttling already happened in
+        _log_watcher_tick. This step formerly invoked an LLM; it now writes the
+        JSON ticket directly. Triage will gate it before Conductor runs.
+        """
+        # Skip for 2 minutes after a merge so deployment-related noise settles.
         if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
+        if self._file_bug_ticket(project_dir, matching_lines):
+            METRICS.signal_triggers_total.inc()
 
-        open_bugs = self._get_cached_open_bugs()
-        if open_bugs:
-            existing_bugs_text = "\n".join(
-                f"- {bug.get('title', '(untitled)')}" for bug in open_bugs
-            )
-        else:
-            existing_bugs_text = "(none)"
+    # Signal is now deterministic — _file_bug_ticket builds the JSON directly from
+    # filtered error lines. No LLM call. _trigger_signal_reactive is the entrypoint
+    # called by the log watcher after pattern/dedup/cross-check filters have passed.
 
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        log_lines = "\n".join(matching_lines[:50])
-        METRICS.signal_triggers_total.inc()
-        activity(f"SIGNAL [watcher] triggered — {len(matching_lines)} error lines detected")
-        prompt = config.SIGNAL_PROMPT.format(
-            log_lines=log_lines,
-            timestamp=ts,
-            working_dir=project_dir,
-            backlog_dir=config.BACKLOG_DIR,
-            existing_bugs=existing_bugs_text,
+    _HIGH_SEVERITY_PATTERNS = (
+        "Traceback", "FATAL", "CRITICAL", "ImportError", "ModuleNotFoundError",
+        "SyntaxError", "panic:", "segfault", "Segmentation fault",
+    )
+
+    @staticmethod
+    def _slug_from_log_line(line: str, max_len: int = 50) -> str:
+        """Strip timestamp/log-level prefix, slugify, truncate."""
+        cleaned = re.sub(r'^\[?\d{4}-\d{2}-\d{2}[T \d:.,Z+\-]*\]?\s*', '', line)
+        cleaned = re.sub(r'^(?:ERROR|WARNING|FATAL|CRITICAL|INFO|DEBUG)[:\s\-]+', '',
+                         cleaned, flags=re.IGNORECASE)
+        slug = re.sub(r'[^a-z0-9]+', '-', cleaned.lower()).strip('-')
+        if not slug:
+            slug = "log-error"
+        return slug[:max_len].rstrip('-') or "log-error"
+
+    def _file_bug_ticket(self, project_dir: str, matching_lines: list[str]) -> bool:
+        """Write a bug spec JSON to BACKLOG_DIR deterministically. No LLM call.
+
+        Title is slugged from the first matching line; priority is high if any
+        of the first few lines match a known high-severity signature, else
+        medium. Returns True if a spec was written.
+        """
+        if not matching_lines:
+            return False
+        summary = self._slug_from_log_line(matching_lines[0])
+        title = f"bug-{summary}"
+        sample = "\n".join(matching_lines[:5])
+        priority = "high" if any(p in sample for p in self._HIGH_SEVERITY_PATTERNS) else "medium"
+        description = (
+            "Detected error pattern in application logs.\n\n"
+            f"Log lines ({min(len(matching_lines), 30)} of {len(matching_lines)}):\n"
+            + "\n".join(matching_lines[:30])
         )
-        self._launch_agent("signal", prompt, cwd=project_dir)
-
-    # Signal is now reactive — triggered by _log_watcher_tick via _trigger_signal_reactive.
-    # No polling (_phase_signal) or health check (_check_signal_health) needed.
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        spec = {
+            "title": title,
+            "description": description,
+            "priority": priority,
+            "created_by": "signal",
+            "working_dir": project_dir,
+        }
+        fname = f"{ts}_bug_{summary}.json"
+        path = os.path.join(config.BACKLOG_DIR, fname)
+        try:
+            with open(path, "w") as f:
+                json.dump(spec, f, indent=2)
+        except OSError as e:
+            log.warning("Failed to write Signal bug spec %s: %s", path, e)
+            return False
+        activity(
+            f"SIGNAL [auto] filed bug: {title} priority={priority} "
+            f"({len(matching_lines)} line{'s' if len(matching_lines) != 1 else ''})"
+        )
+        return True
 
     def _train_phase_entropy_check(self, train: Train):
         """If branch has too many fix/update commits, fire Conductor and restart."""
@@ -2513,6 +2500,12 @@ class StationManager:
         if "ops" in self.agent_cooldowns and time.time() < self.agent_cooldowns["ops"]:
             return
 
+        # Deterministic trigger gate — skip unless something is actionable
+        # (or the max-idle gap has elapsed). Most quiet hours, we return here.
+        should_launch, reason = self._ops_should_launch()
+        if not should_launch:
+            return
+
         activity_tail, git_log = self._gather_ops_context()
         prompt = config.OPS_PROMPT.format(
             base_dir=config.BASE_DIR,
@@ -2521,7 +2514,42 @@ class StationManager:
         )
         agent = self._launch_agent("ops", prompt, cwd=config.BASE_DIR)
         if agent is not None:
+            activity(f"OPS triggered — {reason}")
             self._ops_head_before = self._git_last_commit(cwd=config.BASE_DIR)
+
+    def _ops_should_launch(self) -> tuple[bool, str]:
+        """Decide whether Ops has something worth investigating right now.
+
+        Read-only check against in-memory state — safe to call every tick.
+        Returns (True, reason) when any trigger fires or the max-idle gap has
+        elapsed; otherwise (False, ""). The reason is logged when Ops fires.
+        """
+        failing = [name for name, count in self.consecutive_failures.items() if count > 0]
+        if failing:
+            return True, f"agent failures: {', '.join(sorted(failing))}"
+
+        if time.time() < self.sleep_until:
+            return True, "sleep mode active"
+
+        if self.restart_pending:
+            return True, "restart pending"
+
+        if self._stalled_projects:
+            stalled = sorted(os.path.basename(p) for p in self._stalled_projects)
+            return True, f"stalled projects: {', '.join(stalled)}"
+
+        snap = self.budget.snapshot()
+        if snap.get("enabled") and snap.get("utilization", 0) >= config.OPS_BUDGET_TRIGGER:
+            return True, f"budget at {snap['utilization'] * 100:.0f}%"
+
+        # Safety net: don't go dark for too long. StationManager init seeds
+        # last_launch_times["ops"] = startup time, so this can't accidentally
+        # fire on a fresh orchestrator.
+        last_ops = self.last_launch_times.get("ops", 0)
+        if last_ops > 0 and time.time() - last_ops > config.MAX_OPS_IDLE_SECONDS:
+            return True, f"idle gap > {config.MAX_OPS_IDLE_SECONDS}s"
+
+        return False, ""
 
     # ─── SLA enforcement ─────────────────────────────────────────────────
 

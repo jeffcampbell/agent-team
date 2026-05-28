@@ -2,7 +2,7 @@
 
 ![Yamanote](img/yamanote_banner.png)
 
-A multi-agent orchestrator that coordinates Claude Code agent personas — **Dispatcher**, **Triage**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
+A multi-agent orchestrator that coordinates Claude Code agent personas — **Dispatcher**, **Triage**, **Conductor**, **Inspector**, and **Operations** — to autonomously develop and maintain a software project. Two further pipeline steps — **Signal** (log-watcher bug filing) and the **Station Manager check** (stuck-branch reset) — run as deterministic code with no LLM. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
 
 Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd service.
 
@@ -11,7 +11,7 @@ Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd se
 The orchestrator runs a tick loop (every 10 seconds by default) that evaluates phases in order:
 
 ```
-service_recovery → rework → dispatcher → triage → conductor → inspector → signal → entropy_check → station_manager_check
+service_recovery → rework → dispatcher → triage → conductor → inspector → entropy_check → station_manager_check
 ```
 
 Each phase decides whether to launch its agent based on the current state of the pipeline. Only one instance of each agent runs at a time.
@@ -21,12 +21,73 @@ Each phase decides whether to launch its agent based on the current state of the
 | Agent | Model | Role |
 |---|---|---|
 | **Dispatcher** | Sonnet | Analyzes the codebase and app logs to write feature specs when the backlog is empty |
-| **Triage** | Sonnet | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
+| **Triage** | Haiku | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
 | **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
-| **Inspector** | Sonnet | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
-| **Signal** | Sonnet | Monitors application logs for errors and files bug tickets into the backlog |
-| **Station Manager** | Sonnet | Resets branches when Conductor gets stuck in edit loops |
-| **Operations** | Sonnet | Analyzes orchestrator activity and implements small operational improvements |
+| **Inspector** | Haiku¹ | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
+| **Operations** | Haiku | Analyzes orchestrator activity and implements small operational improvements |
+
+¹ Inspector uses Sonnet on the `regular` (high-complexity) train. Defaults are tuned to fit a modest Agent SDK credit pool; override `SONNET_MODEL` / `HAIKU_MODEL` or the per-agent entries in `config.py` to change.
+
+Two pipeline steps run as deterministic code (no LLM):
+- **Signal** — the log watcher matches ERROR/WARNING lines, deduplicates by signature, throttles against open bugs, then writes a JSON bug spec directly to the backlog. Triage gates it before Conductor runs.
+- **Station Manager check** — when a Conductor edits the same files past a threshold without merging, the branch is reset and the spec is re-queued.
+
+## Managing token costs
+
+Starting **2026-06-15**, Anthropic split subscription limits into two pools: interactive use (chat, manual Claude Code) stays on your normal subscription, while programmatic use (`claude -p`, Agent SDK, GitHub Actions) draws from a separate, smaller **Agent SDK credit pool** — `$20/mo` for Pro, `$100/mo` for Max 5x, `$200/mo` for Max 20x. Yamanote runs entirely through `claude -p`, so it consumes from that pool. Beyond the cap, launches bill at standard API rates (or stop, depending on overage settings).
+
+Yamanote ships with four layered defenses to keep cost predictable on every tier. Each one is independently tunable in `config.py`.
+
+### 1. Per-agent model tiering
+
+Sonnet is reserved for roles where output quality dominates (Dispatcher writes specs, Conductor writes code). Everything else runs on Haiku — roughly 10× cheaper and sufficient for classification, log scans, status checks, and small-edit ops.
+
+```
+Dispatcher          Sonnet    (spec quality drives everything downstream)
+Conductor           Sonnet    (the actual implementer)
+Inspector (regular) Sonnet    (high-complexity train; quality matters more)
+Inspector (other)   Haiku     (checklist review against a diff)
+Triage              Haiku     (BUILD / REJECT / HOLD gate)
+Ops                 Haiku     (capped at <20-line diff)
+```
+
+Override via `SONNET_MODEL` / `HAIKU_MODEL` constants or the per-agent entries in `AGENT_MODELS` and `TRAIN_CONFIG`.
+
+### 2. Monthly budget gate
+
+Set `AGENT_TEAM_MONTHLY_BUDGET_USD` and the orchestrator estimates per-launch cost (from `TOKENS_PER_LAUNCH × MODEL_PRICES_USD`) and pauses new launches once the cap is reached. The dashboard shows a fuel-gauge chip with month-to-date spend. Resets at the calendar-month boundary in UTC. Persisted to `agents/budget.json`.
+
+Estimates are **coarse pre-flight** — `claude -p` doesn't report actual token usage. Tune `TOKENS_PER_LAUNCH` based on what you observe in your own logs over time.
+
+| Tier | Recommended cap | Approx capacity at defaults |
+|---|---|---|
+| Pro `$20` | `20` | ~35 full Conductor cycles/month — hobbyist load |
+| Max 5x `$100` | `100` | ~180 full cycles/month — solo developer load |
+| Max 20x `$200` | `200` | Comfortable for continuous operation on the defaults |
+
+### 3. Don't call the LLM when code can do it
+
+Several steps that historically launched a Claude subprocess now run as plain Python:
+
+- **Signal** (log-watcher → bug ticket): the watcher already does regex matching, signature dedup, open-bug throttling, and backlog cross-checks. The bug spec is now built directly from the filtered lines with a slug-from-message title and a high/medium priority heuristic.
+- **Station Manager check** (stuck-branch reset): pure deterministic check against `train.file_edits`.
+- **Ops trigger gate**: Ops only fires when something is actually wrong (failures, sleep mode, restart pending, stalled projects, budget ≥ 80%). Most idle hours produce zero Ops launches. Safety-net cadence of 24h ensures it still runs daily.
+
+### 4. Pre-compute Conductor context
+
+Conductor's most expensive cost is re-exploring the codebase on every launch. `spec_context.py` pre-computes a tight shortlist of likely-relevant files using `git grep` against tracked files plus a recency bonus, and injects it as a markdown block at the top of the Conductor prompt. No LLM call; degrades to empty on non-git directories. Reduces re-exploration overhead on the single most expensive agent.
+
+### Tuning levers if you're running hot
+
+If the budget gauge climbs faster than expected, lower these in order of safety:
+
+1. `AGENT_TEAM_STANDARD_TRAINS` → `0` and run nothing in parallel
+2. `MAX_AGENT_LAUNCHES_PER_HOUR` → `15` (default 30) — tighter fare-limit cap
+3. Increase `AGENT_MIN_INTERVALS["dispatcher"]` from 1800s (30m) to 3600s (1h)
+4. Drop `INSPECTOR_DIFF_MAX_CHARS` from 20000 to 10000 — smaller review prompts
+5. Increase `OPS_BUDGET_TRIGGER` from `0.8` to `0.95` to delay Ops launches further
+
+If you want to run entirely off Anthropic's pool, point `CLAUDE_CMD` at a wrapper script that invokes a local model with `claude -p`-compatible arguments. The orchestrator only cares about subprocess exit codes and stdout.
 
 ### Pipeline flow
 
@@ -54,6 +115,8 @@ REJECTED specs are logged to `agents/rejected_specs.txt`. HOLD specs move to `ag
 yamanote/
 ├── orchestrator.py       # Main orchestration loop
 ├── config.py             # All configuration and agent prompts
+├── budget.py             # Monthly USD spend tracker (Agent SDK credit pool)
+├── spec_context.py       # Per-spec relevant-files bundle for Conductor
 ├── metrics.py            # Prometheus-compatible metrics registry (stdlib-only)
 ├── dashboard.py          # Optional web dashboard + /metrics endpoint
 ├── dashboard.html        # Dashboard UI (single-page, dark theme)
@@ -61,11 +124,15 @@ yamanote/
 ├── agent-team.service    # systemd unit file
 ├── start.sh              # Wrapper that auto-restarts on exit
 ├── .env.example          # Template for environment variables
+├── test_orchestrator.py  # Orchestrator + lifecycle test suite (unittest)
+├── test_worktree.py      # Git worktree integration tests
+├── test_spec_context.py  # spec_context module tests
 └── agents/               # Runtime data (gitignored)
     ├── backlog/          # JSON spec files (features and bugs)
     ├── drafts/           # HOLD specs awaiting re-evaluation
     ├── review/           # Inspector feedback files
     ├── logs/             # Stdout/stderr from each agent run
+    ├── budget.json       # Monthly spend tracker state
     └── activity.log      # Human-readable event log
 ```
 
@@ -218,6 +285,10 @@ Metrics exposed:
 | `yamanote_launches_last_hour` | Gauge | Agent launches in the past 60 minutes |
 | `yamanote_sleep_mode_active` | Gauge | `1` if rate-limit sleep mode is active |
 | `yamanote_uptime_seconds` | Gauge | Seconds since the orchestrator started |
+| `yamanote_budget_spend_usd` | Gauge | Estimated month-to-date Anthropic API spend |
+| `yamanote_budget_limit_usd` | Gauge | Configured monthly USD cap (`0` if disabled) |
+| `yamanote_budget_utilization` | Gauge | Spend / cap as a fraction |
+| `yamanote_budget_exhausted` | Gauge | `1` when the budget gate is blocking new launches |
 
 Point Prometheus at `http://<host>:<port>/metrics` and connect Grafana for dashboards.
 
@@ -295,6 +366,7 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `AGENT_TEAM_REGULAR_TRAINS` | `0` | Number of high-complexity parallel pipelines |
 | `AGENT_TEAM_STANDARD_TRAINS` | `1` | Number of medium-complexity parallel pipelines |
 | `AGENT_TEAM_EXPRESS_TRAINS` | `0` | Number of low-complexity parallel pipelines |
+| `AGENT_TEAM_MONTHLY_BUDGET_USD` | `0` *(disabled)* | Monthly USD cap on estimated Anthropic spend. Pauses launches when reached. Resets at month boundary (UTC). |
 
 ### Timing
 
@@ -325,6 +397,8 @@ All settings are in `config.py`. Key settings can be overridden via environment 
 | `MAX_SPEC_TIMEOUTS` | 2 | Conductor timeouts on a spec before it is dropped |
 | `MAX_CONFLICT_RETRIES` | 3 | Merge conflict retries before a spec is permanently rejected |
 | `MAX_CONSECUTIVE_REJECTIONS` | 5 | Consecutive triage rejections before a project's dispatcher is paused |
+| `MAX_OPS_IDLE_SECONDS` | 86400 (24h) | Safety-net interval — fire Ops at least this often even when no triggers are active |
+| `OPS_BUDGET_TRIGGER` | 0.8 | Budget-utilization fraction that triggers an Ops launch |
 | `STALL_PAUSE_SECONDS` | 86400s (24 hr) | How long to pause a stalled project's dispatcher |
 | `DRAFTS_RECYCLE_AGE_SECONDS` | 86400s (24 hr) | Age before a HOLD spec is moved back to backlog |
 | `WORKTREE_GC_INTERVAL` | 3600s (1 hr) | How often to scan for and remove orphaned git worktrees |
@@ -380,6 +454,9 @@ station_manager.register_log_source(MySource())
 
 - **Self-protection** — agents cannot create specs targeting the orchestrator's own codebase
 - **Fare limit** — enters sleep mode for 1 hour after 30 launches in a rolling hour
+- **Monthly token budget** — when `AGENT_TEAM_MONTHLY_BUDGET_USD` is set, the orchestrator estimates the cost of each launch from `TOKENS_PER_LAUNCH × MODEL_PRICES_USD` in `config.py`, tracks running spend in `agents/budget.json`, and skips new launches once the cap is reached. Resets at the start of each calendar month (UTC). The dashboard shows a fuel-gauge chip; estimates are coarse — tune `TOKENS_PER_LAUNCH` from your own usage over time
+- **Ops trigger gate** — Ops only launches when something is actionable: agent failures, sleep mode, restart pending, stalled projects, or budget at ≥ `OPS_BUDGET_TRIGGER` utilization. As a safety net it also fires if no Ops launch has happened in `MAX_OPS_IDLE_SECONDS` (default 24h). The activity log records the trigger reason; quiet hours produce no Ops launches
+- **Per-spec relevant-files bundle** — before each Conductor launch (initial implementation and rework), `spec_context.py` extracts keywords from the spec, runs `git grep` against tracked files, and injects a `## Files likely relevant to this spec` block at the top of the Conductor prompt. Pure shell + Python — no LLM call. Falls back gracefully on non-git directories. Reduces Conductor's need to re-explore the codebase on every launch
 - **Error cooldown** — exponential backoff (120s base, 1hr cap) on agent failures
 - **Entropy detection** — if a branch accumulates 5+ "fix"/"update" commits, the branch is deleted and the spec re-queued with a fresh start
 - **Timeout enforcement** — agents are terminated after 20 minutes; timeouts trigger exponential cooldown and specs are dropped after 2 consecutive timeouts

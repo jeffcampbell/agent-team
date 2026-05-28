@@ -593,32 +593,6 @@ class TestErrorRecovery(OrchestratorTestBase):
         self.assertGreater(train.inspector_cooldown_until, time.time())
         self.assertEqual(train.inspector_failures, 1)
 
-    def test_signal_failure_rolls_back_offsets(self):
-        sm = self._make_station_manager()
-        sm._sre_prev_offsets = {"/project": 100}
-        sm.sre_log_offsets = {"/project": 500}
-        agent = MagicMock()
-        agent.name = "signal"
-        agent.poll.return_value = True
-        agent.proc = self._make_mock_proc(returncode=1, stdout="err")
-        agent.get_output.return_value = "err"
-        agent.get_stderr.return_value = ""
-        sm.active_agents["signal"] = agent
-        sm._is_agent_active("signal")
-        self.assertEqual(sm.sre_log_offsets["/project"], 100)
-
-    def test_signal_timeout_rolls_back_offsets(self):
-        sm = self._make_station_manager()
-        sm._sre_prev_offsets = {"/project": 50}
-        sm.sre_log_offsets = {"/project": 300}
-        agent = MagicMock()
-        agent.name = "signal"
-        agent.proc = self._make_mock_proc()
-        agent.proc.poll.return_value = None  # still running
-        agent.start_time = time.time() - config.AGENT_TIMEOUT_SECONDS - 10
-        sm.active_agents["signal"] = agent
-        sm._kill_timed_out_agent("signal", agent)
-        self.assertEqual(sm.sre_log_offsets["/project"], 50)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1140,54 +1114,13 @@ class TestEntropyDetection(OrchestratorTestBase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestLogReading(OrchestratorTestBase):
-    """Test high-water mark log reading and _find_app_log resolution."""
+    """Test _find_app_log resolution."""
 
     def _make_log_file(self, project_dir, name="app.log", content="line1\nline2\n"):
         log_path = os.path.join(project_dir, name)
         with open(log_path, "w") as f:
             f.write(content)
         return log_path
-
-    def test_first_read_sets_hwm_returns_empty(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        self._make_log_file(project_dir)
-        result = sm._read_new_log_lines(project_dir)
-        self.assertEqual(result, "")
-        self.assertIn(project_dir, sm.sre_log_offsets)
-
-    def test_second_read_returns_new_lines(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        log_path = self._make_log_file(project_dir)
-        sm._read_new_log_lines(project_dir)  # set HWM
-        with open(log_path, "a") as f:
-            f.write("new_line\n")
-        result = sm._read_new_log_lines(project_dir)
-        self.assertIn("new_line", result)
-
-    def test_no_new_content_returns_empty(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        self._make_log_file(project_dir)
-        sm._read_new_log_lines(project_dir)  # set HWM
-        result = sm._read_new_log_lines(project_dir)
-        self.assertEqual(result, "")
-
-    def test_log_rotation_resets_offset(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        log_path = self._make_log_file(project_dir, content="a" * 1000)
-        sm._read_new_log_lines(project_dir)  # set HWM to 1000
-        # Simulate log rotation: file is now smaller
-        with open(log_path, "w") as f:
-            f.write("rotated\n")
-        result = sm._read_new_log_lines(project_dir)
-        self.assertIn("rotated", result)
 
     def test_find_app_log_env_glob(self):
         sm = self._make_station_manager()
@@ -1229,35 +1162,6 @@ class TestLogReading(OrchestratorTestBase):
         result = sm._find_app_log(project_dir)
         self.assertIsNone(result)
 
-    def test_railway_logs_first_read_sets_marker(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2\nline3")
-        result = sm._read_new_railway_logs("/project")
-        self.assertEqual(result, "")
-        self.assertIn("_railway_", sm.sre_log_offsets)
-
-    def test_railway_logs_dedup_returns_new(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2\nline3")
-        sm._read_new_railway_logs("/project")
-        sm._fetch_railway_logs.return_value = "line1\nline2\nline3\nline4\nline5"
-        result = sm._read_new_railway_logs("/project")
-        self.assertIn("line4", result)
-        self.assertIn("line5", result)
-        self.assertNotIn("line1", result)
-
-    def test_railway_logs_rotation_returns_all(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2")
-        sm._read_new_railway_logs("/project")
-        # Simulate log rotation — none of the old lines are present
-        sm._fetch_railway_logs.return_value = "new1\nnew2"
-        result = sm._read_new_railway_logs("/project")
-        self.assertIn("new1", result)
-        self.assertIn("new2", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1472,14 +1376,14 @@ class TestDashboardPayload(OrchestratorTestBase):
 
     def test_global_agent_cooldown(self):
         sm = self._make_station_manager()
-        sm.agent_cooldowns["signal"] = time.time() + 600
+        sm.agent_cooldowns["ops"] = time.time() + 600
         payload = self._build_payload(sm)
-        self.assertEqual(payload["agents"]["signal"]["status"], "cooldown")
+        self.assertEqual(payload["agents"]["ops"]["status"], "cooldown")
 
     def test_global_agent_idle(self):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
-        self.assertEqual(payload["agents"]["signal"]["status"], "idle")
+        self.assertEqual(payload["agents"]["ops"]["status"], "idle")
 
     def test_backlog_counts(self):
         sm = self._make_station_manager()
@@ -1504,8 +1408,8 @@ class TestDashboardPayload(OrchestratorTestBase):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
         expected = {"timestamp", "uptime_seconds", "paused", "agents", "trains",
-                    "pipeline", "backlog", "completed", "stats", "activity", "config",
-                    "verbose_logs"}
+                    "pipeline", "backlog", "completed", "stats", "budget", "activity",
+                    "config", "verbose_logs"}
         self.assertEqual(set(payload.keys()), expected)
 
     def test_backward_compat_pipeline_from_active_train(self):
@@ -1665,6 +1569,109 @@ class TestSpecTimeoutHandling(OrchestratorTestBase):
         sm._kill_timed_out_train_agent(train, "conductor", agent)
         self.assertEqual(train.conductor_failures, 1)
         self.assertGreater(train.conductor_cooldown_until, time.time())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestOpsTriggerGate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestOpsTriggerGate(OrchestratorTestBase):
+    """Ops should only launch when something is actionable (or the idle gap fires)."""
+
+    def test_no_triggers_no_launch(self):
+        sm = self._make_station_manager()
+        # Simulate Ops having run recently so the idle gap doesn't fire.
+        sm.last_launch_times["ops"] = time.time()
+        should, reason = sm._ops_should_launch()
+        self.assertFalse(should)
+        self.assertEqual(reason, "")
+
+    def test_fresh_orchestrator_no_triggers_no_launch(self):
+        # StationManager init seeds last_launch_times["ops"] = startup time,
+        # so the idle-gap rule must not fire on a fresh orchestrator with no
+        # triggers — same path as "no triggers, recently ran".
+        sm = self._make_station_manager()
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_consecutive_failures_fire(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.consecutive_failures["dispatcher"] = 2
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("dispatcher", reason)
+
+    def test_zero_failure_count_does_not_fire(self):
+        # consecutive_failures[name] = 0 entries (left over after success) must not trigger
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.consecutive_failures["dispatcher"] = 0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_sleep_mode_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.sleep_until = time.time() + 600
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("sleep", reason)
+
+    def test_restart_pending_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.restart_pending = True
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("restart", reason)
+
+    def test_stalled_projects_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm._stalled_projects = {"/dev/my-app": time.time() + 3600}
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("my-app", reason)
+
+    def test_budget_high_utilization_fires(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 100.0
+        sm.budget._state["spend_usd"] = 85.0
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("budget", reason)
+
+    def test_budget_low_utilization_does_not_fire(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 100.0
+        sm.budget._state["spend_usd"] = 10.0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_budget_disabled_does_not_fire(self):
+        # Even at notional 100% utilization, if budget cap is 0 the trigger is silent.
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time()
+        sm.budget.monthly_limit_usd = 0
+        sm.budget._state["spend_usd"] = 999.0
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
+
+    def test_idle_gap_fires_after_threshold(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time() - (config.MAX_OPS_IDLE_SECONDS + 60)
+        should, reason = sm._ops_should_launch()
+        self.assertTrue(should)
+        self.assertIn("idle gap", reason)
+
+    def test_idle_gap_does_not_fire_before_threshold(self):
+        sm = self._make_station_manager()
+        sm.last_launch_times["ops"] = time.time() - 600  # 10 min ago
+        should, _ = sm._ops_should_launch()
+        self.assertFalse(should)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
