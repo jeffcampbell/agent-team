@@ -301,11 +301,14 @@ You are the Conductor agent. Implement the feature spec below.
 
 Spec: {spec_json}
 
+{relevant_files}
+
 1. cd {working_dir}. Confirm branch is {branch_name} (if not, STOP — do not checkout).
 2. Run `git log --oneline -8 {repo_dir}` — don't duplicate or revert recent main commits.
-3. Implement the spec. Handle errors on all service/DB/API return values.
-4. If deleting files or routes, verify the project builds before committing.
-5. Commit with clear messages. Do NOT merge. Summarize changes to stdout.
+3. Implement the spec. Start with the files above when they apply, but read others as needed.
+4. Handle errors on all service/DB/API return values.
+5. If deleting files or routes, verify the project builds before committing.
+6. Commit with clear messages. Do NOT merge. Summarize changes to stdout.
 """
 
 CONDUCTOR_REWORK_PROMPT = """\
@@ -318,6 +321,8 @@ Branch: {branch_name} — stay on this branch, do NOT checkout.
 
 Inspector feedback:
 {reviewer_feedback}
+
+{relevant_files}
 
 1. cd {working_dir}. Run `git log --oneline -8 {repo_dir}` to check for recent main merges.
 2. Address each issue raised. Handle errors on all service/DB/API return values.

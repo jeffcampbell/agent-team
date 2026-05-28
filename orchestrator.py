@@ -18,6 +18,7 @@ from collections import deque
 import config
 from budget import BudgetTracker, estimate_cost_usd
 from metrics import METRICS
+from spec_context import build_relevant_files_block
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1979,6 +1980,7 @@ class StationManager:
             working_dir=worktree_path,
             repo_dir=train.repo_dir or worktree_path,
             branch_name=branch_name,
+            relevant_files=build_relevant_files_block(worktree_path, spec_data),
         )
         agent = self._launch_train_agent(train, "conductor", prompt, cwd=worktree_path)
         if agent is None:
@@ -2171,6 +2173,7 @@ class StationManager:
             reviewer_feedback=reviewer_feedback,
             working_dir=cwd,
             repo_dir=train.repo_dir or cwd,
+            relevant_files=build_relevant_files_block(cwd, spec_data),
         )
         self._launch_train_agent(train, "conductor", prompt, cwd=cwd)
         train.edits_tallied = False
