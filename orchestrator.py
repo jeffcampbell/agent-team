@@ -545,9 +545,6 @@ class StationManager:
         self.consecutive_failures: dict[str, int] = {}  # agent name → failure streak
         self.last_launch_times: dict[str, float] = {}  # agent name → last launch timestamp
 
-        # Signal high-water mark: only analyze new log lines since last run
-        self.sre_log_offsets: dict[str, int] = {}  # project_dir → byte offset in app.log
-        self._sre_prev_offsets: dict[str, int] = {}  # offset before last Signal read (for rollback on failure)
         self.last_merge_time: float = 0.0  # timestamp of last merge (to skip Signal during deployment)
 
         # Log watcher: pluggable sources + dedup state
@@ -1057,78 +1054,6 @@ class StationManager:
             capture_output=True, text=True,
         )
         return result.stdout
-
-    def _read_new_log_lines(self, project_dir: str) -> str:
-        """Read only log lines written since the last Signal run (high-water mark)."""
-        if config.RAILWAY_PROJECT:
-            return self._read_new_railway_logs(project_dir)
-
-        log_path = self._find_app_log(project_dir)
-        if not log_path:
-            return ""
-
-        if project_dir not in self.sre_log_offsets:
-            # First run (or after restart): set high-water mark to current EOF.
-            # Don't re-analyze logs that were already seen before the restart.
-            try:
-                self.sre_log_offsets[project_dir] = os.path.getsize(log_path)
-            except OSError:
-                pass
-            return ""
-
-        stored_offset = self.sre_log_offsets[project_dir]
-        try:
-            file_size = os.path.getsize(log_path)
-        except OSError:
-            return ""
-
-        # Log rotation: file shrank below stored offset → reset to start
-        if file_size < stored_offset:
-            stored_offset = 0
-
-        if file_size == stored_offset:
-            return ""  # No new content
-
-        with open(log_path, "r") as f:
-            f.seek(stored_offset)
-            new_content = f.read()
-
-        self._sre_prev_offsets[project_dir] = stored_offset
-        self.sre_log_offsets[project_dir] = file_size
-        return new_content
-
-    def _read_new_railway_logs(self, project_dir: str) -> str:
-        """Fetch Railway production logs and return only lines not seen before."""
-        key = "_railway_"
-        output = self._fetch_railway_logs(config.RAILWAY_PRODUCTION_ENV)
-        if not output:
-            return ""
-
-        lines = output.splitlines()
-        if not lines:
-            return ""
-
-        if key not in self.sre_log_offsets:
-            # First run: set high-water mark, return empty (same semantics as local mode)
-            self._sre_prev_offsets[key] = None
-            self.sre_log_offsets[key] = lines[-1]
-            return ""
-
-        last_seen = self.sre_log_offsets[key]
-        # Find where the last-seen line is in the new output
-        try:
-            idx = lines.index(last_seen)
-            new_lines = lines[idx + 1:]
-        except ValueError:
-            # Last-seen line not found (log rotated or too much new output) — return all
-            new_lines = lines
-
-        if not new_lines:
-            return ""
-
-        self._sre_prev_offsets[key] = last_seen
-        self.sre_log_offsets[key] = new_lines[-1]
-        return "\n".join(new_lines)
 
     def _gather_ops_context(self) -> tuple[str, str]:
         """Collect diagnostic data for the ops agent."""

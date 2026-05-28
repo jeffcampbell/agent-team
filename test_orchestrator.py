@@ -1114,54 +1114,13 @@ class TestEntropyDetection(OrchestratorTestBase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestLogReading(OrchestratorTestBase):
-    """Test high-water mark log reading and _find_app_log resolution."""
+    """Test _find_app_log resolution."""
 
     def _make_log_file(self, project_dir, name="app.log", content="line1\nline2\n"):
         log_path = os.path.join(project_dir, name)
         with open(log_path, "w") as f:
             f.write(content)
         return log_path
-
-    def test_first_read_sets_hwm_returns_empty(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        self._make_log_file(project_dir)
-        result = sm._read_new_log_lines(project_dir)
-        self.assertEqual(result, "")
-        self.assertIn(project_dir, sm.sre_log_offsets)
-
-    def test_second_read_returns_new_lines(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        log_path = self._make_log_file(project_dir)
-        sm._read_new_log_lines(project_dir)  # set HWM
-        with open(log_path, "a") as f:
-            f.write("new_line\n")
-        result = sm._read_new_log_lines(project_dir)
-        self.assertIn("new_line", result)
-
-    def test_no_new_content_returns_empty(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        self._make_log_file(project_dir)
-        sm._read_new_log_lines(project_dir)  # set HWM
-        result = sm._read_new_log_lines(project_dir)
-        self.assertEqual(result, "")
-
-    def test_log_rotation_resets_offset(self):
-        sm = self._make_station_manager()
-        project_dir = os.path.join(self.tmpdir, "proj")
-        os.makedirs(project_dir, exist_ok=True)
-        log_path = self._make_log_file(project_dir, content="a" * 1000)
-        sm._read_new_log_lines(project_dir)  # set HWM to 1000
-        # Simulate log rotation: file is now smaller
-        with open(log_path, "w") as f:
-            f.write("rotated\n")
-        result = sm._read_new_log_lines(project_dir)
-        self.assertIn("rotated", result)
 
     def test_find_app_log_env_glob(self):
         sm = self._make_station_manager()
@@ -1203,35 +1162,6 @@ class TestLogReading(OrchestratorTestBase):
         result = sm._find_app_log(project_dir)
         self.assertIsNone(result)
 
-    def test_railway_logs_first_read_sets_marker(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2\nline3")
-        result = sm._read_new_railway_logs("/project")
-        self.assertEqual(result, "")
-        self.assertIn("_railway_", sm.sre_log_offsets)
-
-    def test_railway_logs_dedup_returns_new(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2\nline3")
-        sm._read_new_railway_logs("/project")
-        sm._fetch_railway_logs.return_value = "line1\nline2\nline3\nline4\nline5"
-        result = sm._read_new_railway_logs("/project")
-        self.assertIn("line4", result)
-        self.assertIn("line5", result)
-        self.assertNotIn("line1", result)
-
-    def test_railway_logs_rotation_returns_all(self):
-        sm = self._make_station_manager()
-        config.RAILWAY_PROJECT = "my-project"
-        sm._fetch_railway_logs = MagicMock(return_value="line1\nline2")
-        sm._read_new_railway_logs("/project")
-        # Simulate log rotation — none of the old lines are present
-        sm._fetch_railway_logs.return_value = "new1\nnew2"
-        result = sm._read_new_railway_logs("/project")
-        self.assertIn("new1", result)
-        self.assertIn("new2", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

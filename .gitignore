@@ -1,4 +1,10 @@
 .env
+.env.bak
+.env.local
+*.env.local
 __pycache__/
+*.pyc
 agents/
 run.sh
+.DS_Store
+**/.DS_Store
