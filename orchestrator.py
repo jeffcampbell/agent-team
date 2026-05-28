@@ -525,8 +525,6 @@ class StationManager:
         # Global agents (not per-train)
         self.active_agents: dict[str, AgentProcess | None] = {
             "dispatcher": None,
-            "signal": None,
-            "station_manager": None,
             "ops": None,
             "triage": None,
         }
@@ -830,20 +828,15 @@ class StationManager:
                     )
                     return False
                 self.consecutive_failures[name] = self.consecutive_failures.get(name, 0) + 1
-                max_backoff = config.SIGNAL_MAX_BACKOFF if name == "signal" else config.MAX_ERROR_BACKOFF
                 backoff = min(
                     config.AGENT_ERROR_COOLDOWN * (2 ** self.consecutive_failures[name]),
-                    max_backoff,
+                    config.MAX_ERROR_BACKOFF,
                 )
                 cooldown_until = time.time() + backoff
                 self.agent_cooldowns[name] = cooldown_until
                 activity(f"DELAY [{name}] — failure #{self.consecutive_failures[name]}, retry after {backoff}s")
-                # Signal failed — roll back log offsets so the same lines are retried next run
-                if name == "signal":
-                    self.sre_log_offsets.update(self._sre_prev_offsets)
             else:
                 self.consecutive_failures.pop(name, None)
-            self._sre_prev_offsets.clear()
             return False
         if agent.is_timed_out():
             self._kill_timed_out_agent(name, agent)
@@ -877,11 +870,6 @@ class StationManager:
         )
         self.agent_cooldowns[name] = time.time() + backoff
         activity(f"DELAY [{name}] — overdue #{self.consecutive_failures[name]}, retry after {backoff}s")
-
-        # Signal timed out — roll back log offsets so those lines are retried next run
-        if name == "signal":
-            self.sre_log_offsets.update(self._sre_prev_offsets)
-        self._sre_prev_offsets.clear()
 
     def _launch_agent(self, name: str, prompt: str, cwd: str | None = None) -> AgentProcess | None:
         # Error cooldown check
@@ -2255,37 +2243,77 @@ class StationManager:
         self._trigger_signal_reactive(project_dir, matching)
 
     def _trigger_signal_reactive(self, project_dir: str, matching_lines: list[str]):
-        """Launch Signal on-demand to analyze error lines found by the log watcher."""
-        if self._is_agent_active("signal"):
-            return
+        """File a bug spec deterministically from log-watcher-filtered error lines.
 
-        # Skip Signal for 2 minutes after a merge to let deployment propagate
+        Pattern matching, dedup, and open-bug throttling already happened in
+        _log_watcher_tick. This step formerly invoked an LLM; it now writes the
+        JSON ticket directly. Triage will gate it before Conductor runs.
+        """
+        # Skip for 2 minutes after a merge so deployment-related noise settles.
         if self.last_merge_time > 0 and time.time() - self.last_merge_time < 120:
             return
+        if self._file_bug_ticket(project_dir, matching_lines):
+            METRICS.signal_triggers_total.inc()
 
-        open_bugs = self._get_cached_open_bugs()
-        if open_bugs:
-            existing_bugs_text = "\n".join(
-                f"- {bug.get('title', '(untitled)')}" for bug in open_bugs
-            )
-        else:
-            existing_bugs_text = "(none)"
+    # Signal is now deterministic — _file_bug_ticket builds the JSON directly from
+    # filtered error lines. No LLM call. _trigger_signal_reactive is the entrypoint
+    # called by the log watcher after pattern/dedup/cross-check filters have passed.
 
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        log_lines = "\n".join(matching_lines[:50])
-        METRICS.signal_triggers_total.inc()
-        activity(f"SIGNAL [watcher] triggered — {len(matching_lines)} error lines detected")
-        prompt = config.SIGNAL_PROMPT.format(
-            log_lines=log_lines,
-            timestamp=ts,
-            working_dir=project_dir,
-            backlog_dir=config.BACKLOG_DIR,
-            existing_bugs=existing_bugs_text,
+    _HIGH_SEVERITY_PATTERNS = (
+        "Traceback", "FATAL", "CRITICAL", "ImportError", "ModuleNotFoundError",
+        "SyntaxError", "panic:", "segfault", "Segmentation fault",
+    )
+
+    @staticmethod
+    def _slug_from_log_line(line: str, max_len: int = 50) -> str:
+        """Strip timestamp/log-level prefix, slugify, truncate."""
+        cleaned = re.sub(r'^\[?\d{4}-\d{2}-\d{2}[T \d:.,Z+\-]*\]?\s*', '', line)
+        cleaned = re.sub(r'^(?:ERROR|WARNING|FATAL|CRITICAL|INFO|DEBUG)[:\s\-]+', '',
+                         cleaned, flags=re.IGNORECASE)
+        slug = re.sub(r'[^a-z0-9]+', '-', cleaned.lower()).strip('-')
+        if not slug:
+            slug = "log-error"
+        return slug[:max_len].rstrip('-') or "log-error"
+
+    def _file_bug_ticket(self, project_dir: str, matching_lines: list[str]) -> bool:
+        """Write a bug spec JSON to BACKLOG_DIR deterministically. No LLM call.
+
+        Title is slugged from the first matching line; priority is high if any
+        of the first few lines match a known high-severity signature, else
+        medium. Returns True if a spec was written.
+        """
+        if not matching_lines:
+            return False
+        summary = self._slug_from_log_line(matching_lines[0])
+        title = f"bug-{summary}"
+        sample = "\n".join(matching_lines[:5])
+        priority = "high" if any(p in sample for p in self._HIGH_SEVERITY_PATTERNS) else "medium"
+        description = (
+            "Detected error pattern in application logs.\n\n"
+            f"Log lines ({min(len(matching_lines), 30)} of {len(matching_lines)}):\n"
+            + "\n".join(matching_lines[:30])
         )
-        self._launch_agent("signal", prompt, cwd=project_dir)
-
-    # Signal is now reactive — triggered by _log_watcher_tick via _trigger_signal_reactive.
-    # No polling (_phase_signal) or health check (_check_signal_health) needed.
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        spec = {
+            "title": title,
+            "description": description,
+            "priority": priority,
+            "created_by": "signal",
+            "working_dir": project_dir,
+        }
+        fname = f"{ts}_bug_{summary}.json"
+        path = os.path.join(config.BACKLOG_DIR, fname)
+        try:
+            with open(path, "w") as f:
+                json.dump(spec, f, indent=2)
+        except OSError as e:
+            log.warning("Failed to write Signal bug spec %s: %s", path, e)
+            return False
+        activity(
+            f"SIGNAL [auto] filed bug: {title} priority={priority} "
+            f"({len(matching_lines)} line{'s' if len(matching_lines) != 1 else ''})"
+        )
+        return True
 
     def _train_phase_entropy_check(self, train: Train):
         """If branch has too many fix/update commits, fire Conductor and restart."""

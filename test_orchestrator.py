@@ -593,32 +593,6 @@ class TestErrorRecovery(OrchestratorTestBase):
         self.assertGreater(train.inspector_cooldown_until, time.time())
         self.assertEqual(train.inspector_failures, 1)
 
-    def test_signal_failure_rolls_back_offsets(self):
-        sm = self._make_station_manager()
-        sm._sre_prev_offsets = {"/project": 100}
-        sm.sre_log_offsets = {"/project": 500}
-        agent = MagicMock()
-        agent.name = "signal"
-        agent.poll.return_value = True
-        agent.proc = self._make_mock_proc(returncode=1, stdout="err")
-        agent.get_output.return_value = "err"
-        agent.get_stderr.return_value = ""
-        sm.active_agents["signal"] = agent
-        sm._is_agent_active("signal")
-        self.assertEqual(sm.sre_log_offsets["/project"], 100)
-
-    def test_signal_timeout_rolls_back_offsets(self):
-        sm = self._make_station_manager()
-        sm._sre_prev_offsets = {"/project": 50}
-        sm.sre_log_offsets = {"/project": 300}
-        agent = MagicMock()
-        agent.name = "signal"
-        agent.proc = self._make_mock_proc()
-        agent.proc.poll.return_value = None  # still running
-        agent.start_time = time.time() - config.AGENT_TIMEOUT_SECONDS - 10
-        sm.active_agents["signal"] = agent
-        sm._kill_timed_out_agent("signal", agent)
-        self.assertEqual(sm.sre_log_offsets["/project"], 50)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1472,14 +1446,14 @@ class TestDashboardPayload(OrchestratorTestBase):
 
     def test_global_agent_cooldown(self):
         sm = self._make_station_manager()
-        sm.agent_cooldowns["signal"] = time.time() + 600
+        sm.agent_cooldowns["ops"] = time.time() + 600
         payload = self._build_payload(sm)
-        self.assertEqual(payload["agents"]["signal"]["status"], "cooldown")
+        self.assertEqual(payload["agents"]["ops"]["status"], "cooldown")
 
     def test_global_agent_idle(self):
         sm = self._make_station_manager()
         payload = self._build_payload(sm)
-        self.assertEqual(payload["agents"]["signal"]["status"], "idle")
+        self.assertEqual(payload["agents"]["ops"]["status"], "idle")
 
     def test_backlog_counts(self):
         sm = self._make_station_manager()

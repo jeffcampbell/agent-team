@@ -50,8 +50,6 @@ AGENT_MODELS = {
     "dispatcher":      SONNET_MODEL,  # spec quality drives everything downstream
     "conductor":       SONNET_MODEL,  # actual implementer (also overridden per-train)
     "inspector":       HAIKU_MODEL,   # checklist review (also overridden per-train)
-    "signal":          HAIKU_MODEL,   # log scan + bug dedupe
-    "station_manager": HAIKU_MODEL,   # status report only
     "ops":             HAIKU_MODEL,   # capped at <20-line diff
     "triage":          HAIKU_MODEL,   # BUILD / REJECT / HOLD gate
 }
@@ -62,8 +60,6 @@ AGENT_MIN_INTERVALS = {
     "dispatcher":      1800,   # 30 minutes
     "conductor":       0,      # on-demand (spec-driven)
     "inspector":       0,      # on-demand (eng completion-driven)
-    "signal":          0,      # on-demand (triggered by log watcher, not polling)
-    "station_manager": 0,      # on-demand
     "ops":             3600,   # 1 hour
     "triage":          0,      # on-demand (spec-driven)
 }
@@ -106,11 +102,10 @@ MAX_CONFLICT_RETRIES = 3
 
 AGENT_ERROR_COOLDOWN = 120         # seconds to wait before retrying an agent after non-zero exit
 MAX_ERROR_BACKOFF = 3600           # max backoff cap (1 hour) for exponential retry
-SIGNAL_MAX_BACKOFF = 300           # cap Signal failure backoff at 5 min
 ENTROPY_FIX_COMMIT_THRESHOLD = 5   # "fix"/"update" commits on a branch before firing conductor
 MAX_AGENT_LAUNCHES_PER_HOUR = 30   # cost guardrail — sleep mode after this many
 MAX_SPEC_TIMEOUTS = 2              # drop a spec after this many Conductor timeouts
-MAX_SRE_OPEN_BUGS = 3              # skip Signal launch if this many Signal bugs are already open
+MAX_SRE_OPEN_BUGS = 3              # skip Signal bug ticket creation if this many are already open
 SELF_PROJECT_DIR = BASE_DIR        # agents must not work on the orchestrator itself
 INSPECTOR_DIFF_MAX_CHARS = 20000   # max diff characters passed to Inspector prompt
 LOG_MAX_SIZE_BYTES = 5 * 1024 * 1024  # rotate activity.log when it exceeds this size (5MB)
@@ -160,8 +155,6 @@ TOKENS_PER_LAUNCH = {
     "conductor":       {"input": 80000, "output": 15000},
     "inspector":       {"input": 20000, "output":  3000},
     "triage":          {"input": 15000, "output":  2000},
-    "signal":          {"input": 10000, "output":  1000},
-    "station_manager": {"input":  5000, "output":  1000},
     "ops":             {"input": 30000, "output":  5000},
 }
 
@@ -358,28 +351,6 @@ Do NOT request additional tests beyond criterion (4).
 Write feedback to: {feedback_path}
 First line MUST be either "APPROVED" or "CHANGES_REQUESTED".
 If requesting changes, cite specific files and line numbers. Do NOT merge.
-"""
-
-SIGNAL_PROMPT = """\
-You are the Signal agent. Analyze log lines and file bug reports for new issues.
-
-Project: {working_dir}
-Open bugs (do NOT duplicate): {existing_bugs}
-
-Log lines:
-{log_lines}
-
-If you find a NEW issue, write a JSON bug ticket to {backlog_dir}/:
-  {{"title": "bug-summary", "description": "...", "priority": "high", "created_by": "signal", "working_dir": "{working_dir}"}}
-  Name: {timestamp}_bug_{{summary}}.json
-If already tracked or healthy, report to stdout only.
-"""
-
-STATION_MANAGER_PROMPT = """\
-You are the Station Manager. Assess workflow status and report bottlenecks.
-
-Active agents: {active_agents} | Backlog: {backlog_count}
-Recent merges: {recent_merges} | Edit counts: {eng_edits}
 """
 
 OPS_PROMPT = """\

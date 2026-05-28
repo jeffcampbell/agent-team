@@ -2,7 +2,7 @@
 
 ![Yamanote](img/yamanote_banner.png)
 
-A multi-agent orchestrator that coordinates Claude Code agent personas — **Dispatcher**, **Triage**, **Conductor**, **Inspector**, **Signal**, **Station Manager**, and **Operations** — to autonomously develop and maintain a software project. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
+A multi-agent orchestrator that coordinates Claude Code agent personas — **Dispatcher**, **Triage**, **Conductor**, **Inspector**, and **Operations** — to autonomously develop and maintain a software project. Two further pipeline steps — **Signal** (log-watcher bug filing) and the **Station Manager check** (stuck-branch reset) — run as deterministic code with no LLM. Agents communicate through a folder-based message bus and follow a structured spec-driven development pipeline.
 
 Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd service.
 
@@ -11,7 +11,7 @@ Built to run unattended on a Raspberry Pi (or any Linux machine) as a systemd se
 The orchestrator runs a tick loop (every 10 seconds by default) that evaluates phases in order:
 
 ```
-service_recovery → rework → dispatcher → triage → conductor → inspector → signal → entropy_check → station_manager_check
+service_recovery → rework → dispatcher → triage → conductor → inspector → entropy_check → station_manager_check
 ```
 
 Each phase decides whether to launch its agent based on the current state of the pipeline. Only one instance of each agent runs at a time.
@@ -24,11 +24,13 @@ Each phase decides whether to launch its agent based on the current state of the
 | **Triage** | Haiku | Gates each spec before Conductor runs — evaluates usefulness, priority, and readiness |
 | **Conductor** | Sonnet | Implements specs on feature branches, one at a time |
 | **Inspector** | Haiku¹ | Reviews diffs against `main`. Verifies spec acceptance criteria, approves or requests changes |
-| **Signal** | Haiku | Monitors application logs for errors and files bug tickets into the backlog |
-| **Station Manager** | Haiku | Resets branches when Conductor gets stuck in edit loops |
 | **Operations** | Haiku | Analyzes orchestrator activity and implements small operational improvements |
 
 ¹ Inspector uses Sonnet on the `regular` (high-complexity) train. Defaults are tuned to fit a modest Agent SDK credit pool; override `SONNET_MODEL` / `HAIKU_MODEL` or the per-agent entries in `config.py` to change.
+
+Two pipeline steps run as deterministic code (no LLM):
+- **Signal** — the log watcher matches ERROR/WARNING lines, deduplicates by signature, throttles against open bugs, then writes a JSON bug spec directly to the backlog. Triage gates it before Conductor runs.
+- **Station Manager check** — when a Conductor edits the same files past a threshold without merging, the branch is reset and the spec is re-queued.
 
 ### Pipeline flow
 

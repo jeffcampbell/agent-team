@@ -110,9 +110,9 @@ def _build_status_payload(station_manager, verbose: bool = False) -> dict:
     start_time = getattr(station_manager, "start_time", now)
     sleep_until = station_manager.sleep_until
 
-    # ── Global agents (dispatcher, signal, station_manager, ops) ──
+    # ── Global agents (dispatcher, ops) ──
     agents_out = {}
-    for name in ("dispatcher", "signal", "station_manager", "ops"):
+    for name in ("dispatcher", "ops"):
         agent = active_agents.get(name)
         cooldown_until = agent_cooldowns.get(name, 0)
         in_cooldown = now < cooldown_until
